@@ -64,13 +64,13 @@ with tab_rag:
 with tab_analysis:
     st.header("INCOSE / ASPICE Automated Audit Tool")
     
-    req_files = st.file_uploader("Upload Specs Requirements Documents", type=["txt", "md"], accept_multiple_files=True)
+    req_files = st.file_uploader("Upload Specs Requirements Documents", type=["txt", "md", "csv"], accept_multiple_files=True)
     
     if st.button("📊 Run Deep Quality Analysis"):
         if req_files:
             all_reqs = []
             for f in req_files:
-                all_reqs.extend(st.session_state.analyzer.parse_requirements(f.read()))
+                all_reqs.extend(st.session_state.analyzer.parse_requirements(f.name, f.read()))
             
             with st.spinner("Analyzing ruleset compliance using Nvidia Nemotron..."):
                 rag_context = ""

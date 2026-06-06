@@ -1,5 +1,15 @@
 # RequirementValidator
 
+### To install required libraries for the project
+1. Open the terminal/commandprompt in the project folder
+2. Enter the command, pip install -r requirements.txt
+
+
+### To run the project
+1. Open terminal/commandprompt in the project folder
+2. Enter the command, streamlit run app.py
+3. Open the browser and go to the URL http://localhost:8501/
+
 ### Project Tasks
 - [] FrondEnd
     - [x] Implement a basic UI with 3 tabs, RAG engine, Requirement Analysis, Chatbot

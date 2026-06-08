@@ -17,11 +17,33 @@ class RAGEngine:
             os.remove(self.db_path)
 
     def process_file(self, file_name, file_content):
+        import re
         text = file_content.decode("utf-8", errors="ignore")
         # Split blocks cleanly by double newline breaks
         chunks = [c.strip() for c in text.split("\n\n") if len(c.strip()) > 20]
         
+        final_chunks = []
         for chunk in chunks:
+            # If a chunk is extremely long, break it into smaller sub-chunks
+            if len(chunk) > 1500:
+                sub_chunks = re.split(r'\n|\. ', chunk)
+                current_sub = ""
+                for sc in sub_chunks:
+                    sc = sc.strip()
+                    if not sc:
+                        continue
+                    if len(current_sub) + len(sc) < 1500:
+                        current_sub += "\n" + sc if current_sub else sc
+                    else:
+                        if len(current_sub) > 20:
+                            final_chunks.append(current_sub.strip())
+                        current_sub = sc
+                if len(current_sub) > 20:
+                    final_chunks.append(current_sub.strip())
+            else:
+                final_chunks.append(chunk)
+        
+        for chunk in final_chunks:
             self.documents.append({
                 "source": file_name,
                 "text": chunk

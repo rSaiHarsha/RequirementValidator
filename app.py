@@ -64,18 +64,45 @@ with tab_rag:
 with tab_analysis:
     st.header("INCOSE / ASPICE Automated Audit Tool")
     
-    req_files = st.file_uploader("Upload Specs Requirements Documents", type=["txt", "md", "csv"], accept_multiple_files=True)
+    st.markdown("### 📂 Automotive V-Cycle Upload Matrix")
+    st.caption("Upload specs documents corresponding to different stages of the Automotive V-Cycle.")
     
-    if st.button("📊 Run Deep Quality Analysis"):
-        if req_files:
-            all_reqs = []
-            for f in req_files:
-                all_reqs.extend(st.session_state.analyzer.parse_requirements(f.name, f.read()))
+    with st.expander("🛠️ V-Cycle Level Settings", expanded=True):
+        col_up1, col_up2 = st.columns(2)
+        with col_up1:
+            sys2_files = st.file_uploader("SYS.2 - System Requirements Specification", type=["txt", "md", "csv"], accept_multiple_files=True, key="sys2_uploader")
+            sys3_files = st.file_uploader("SYS.3 - System Architecture Design", type=["txt", "md", "csv"], accept_multiple_files=True, key="sys3_uploader")
+        with col_up2:
+            swe1_files = st.file_uploader("SWE.1 - Software Requirements Specification", type=["txt", "md", "csv"], accept_multiple_files=True, key="swe1_uploader")
+            swe2_files = st.file_uploader("SWE.2 - Software Architectural Design", type=["txt", "md", "csv"], accept_multiple_files=True, key="swe2_uploader")
             
+    if st.button("📊 Run Deep Quality Analysis"):
+        # Combine uploaded files with their respective levels
+        all_reqs = []
+        
+        def process_level_files(uploaded_files, level_label):
+            reqs = []
+            if uploaded_files:
+                for f in uploaded_files:
+                    parsed = st.session_state.analyzer.parse_requirements(f.name, f.read())
+                    for text in parsed:
+                        reqs.append({
+                            "text": text,
+                            "level": level_label,
+                            "source_file": f.name
+                        })
+            return reqs
+
+        all_reqs.extend(process_level_files(sys2_files, "SYS.2"))
+        all_reqs.extend(process_level_files(sys3_files, "SYS.3"))
+        all_reqs.extend(process_level_files(swe1_files, "SWE.1"))
+        all_reqs.extend(process_level_files(swe2_files, "SWE.2"))
+
+        if all_reqs:
             with st.spinner("Analyzing ruleset compliance using Nvidia Nemotron..."):
                 rag_context = ""
                 if st.session_state.rag.vectors:
-                    sample_query = " ".join(all_reqs[:2])
+                    sample_query = " ".join([r["text"] for r in all_reqs[:2]])
                     rag_context = st.session_state.rag.query(sample_query)
                     st.info("ℹ️ Augmented verification active: Using RAG context data alongside LLM foundations.")
                 else:

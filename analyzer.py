@@ -68,6 +68,42 @@ class RequirementAnalyzer:
                 
         return cleaned_reqs
 
+    def _analyze_batch(self, batch, context_data=""):
+        system_prompt = f"""You are an expert Automotive Quality Engineer specializing in INCOSE and ASPICE compliance.
+        Evaluate the provided requirements array against strict quality guidelines:
+        - Look for Ambiguity, lack of Verifiability, or weak Traceability.
+        - If a requirement is compliant, set status to 'Good', failed_rule to 'None', and copy the original text to 'corrected'.
+        - If non-compliant, set status to 'Bad', name the rule broken, and provide the rewrite.
+
+        Contextual RAG Data for reference lookup:
+        {context_data}
+
+        CRITICAL: Be concise. Do NOT include explanations or introductory text anywhere."""
+        user_payload = f"Requirements to evaluate:\n" + "\n".join([f"- {r}" for r in batch])
+        
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_payload}
+        ]
+        
+        response = self.llm.client.beta.chat.completions.parse(
+            model=self.llm.model_name,
+            messages=messages,
+            temperature=0.1,
+            max_tokens=2048, 
+            response_format=RequirementAnalysisSchema,
+        )
+        
+        if response is None or not response.choices:
+            raise ValueError("Empty endpoint object response received.")
+        
+        parsed_object = response.choices[0].message.parsed
+        if not parsed_object:
+            raise ValueError("Model content failed schema validation requirements.")
+        
+        batch_json = parsed_object.model_dump()
+        return batch_json.get("detailed_report", [])
+
     def analyze(self, requirements, context_data=""):
         if not requirements:
             return {
@@ -80,79 +116,78 @@ class RequirementAnalyzer:
             "detailed_report": []
         }
 
-        batches = [requirements[i:i + self.batch_size] for i in range(0, len(requirements), self.batch_size)]
+        # Check if requirements list contains dictionaries (with metadata) or simple strings
+        is_dict = isinstance(requirements[0], dict) if requirements else False
+        req_texts = [r["text"] if is_dict else r for r in requirements]
+
+        batches = [req_texts[i:i + self.batch_size] for i in range(0, len(req_texts), self.batch_size)]
         
         for index, batch in enumerate(batches):
-            system_prompt = f"""You are an expert Automotive Quality Engineer specializing in INCOSE and ASPICE compliance.
-            Evaluate the provided requirements array against strict quality guidelines:
-            - Look for Ambiguity, lack of Verifiability, or weak Traceability.
-            - If a requirement is compliant, set status to 'Good', failed_rule to 'None', and copy the original text to 'corrected'.
-            - If non-compliant, set status to 'Bad', name the rule broken, and provide the rewrite.
-
-            Contextual RAG Data for reference lookup:
-            {context_data}
-
-            CRITICAL: Be concise. Do NOT include explanations or introductory text anywhere."""
-            user_payload = f"Requirements to evaluate:\n" + "\n".join([f"- {r}" for r in batch])
-            
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_payload}
-            ]
-            
+            reports = []
             try:
-                # Restored max_tokens to 2048 to guarantee safety headroom against cutoffs
-                response = self.llm.client.beta.chat.completions.parse(
-                    model=self.llm.model_name,
-                    messages=messages,
-                    temperature=0.1,
-                    max_tokens=2048, 
-                    response_format=RequirementAnalysisSchema,
-                )
-                
-                if response is None or not response.choices:
-                    raise ValueError("Empty endpoint object response received.")
-                
-                parsed_object = response.choices[0].message.parsed
-                if not parsed_object:
-                    raise ValueError("Model content failed schema validation requirements.")
-                
-                batch_json = parsed_object.model_dump()
-                reports = batch_json.get("detailed_report", [])
-                
-                # --- PYTHON LOCAL METRICS CALCULATION ---
-                # Instead of forcing the LLM to count, we compute metrics locally via Python loops.
-                # This guarantees accuracy and prevents JSON truncation errors.
-                for item in reports:
-                    if item["status"].strip().lower() == "good":
-                        combined_report["summary"]["good_count"] += 1
-                    else:
-                        combined_report["summary"]["bad_count"] += 1
-                        
-                        # Match rules to update telemetry metrics categories dynamically
-                        rule = item["failed_rule"].lower()
-                        if "incose" in rule or "ambiguity" in rule or "verify" in rule:
-                            combined_report["summary"]["failed_incose_rules"] += 1
-                        elif "aspice" in rule or "trace" in rule:
-                            combined_report["summary"]["failed_aspice_rules"] += 1
-                        else:
-                            # Default category increment split fallback
-                            combined_report["summary"]["failed_incose_rules"] += 1
-                            
-                    combined_report["detailed_report"].append(item)
-                
+                reports = self._analyze_batch(batch, context_data)
             except Exception as e:
-                error_label = f"Truncation/Parsing Error: {str(e)[:40]}"
-                combined_report["summary"]["bad_count"] += len(batch)
-                combined_report["summary"]["failed_incose_rules"] += len(batch)
+                # If a batch of multiple items fails, break it into individual items and retry
+                if len(batch) > 1:
+                    for item in batch:
+                        try:
+                            # Retry with a single item (smaller array)
+                            single_reports = self._analyze_batch([item], context_data)
+                            reports.extend(single_reports)
+                        except Exception as inner_e:
+                            error_label = f"Truncation/Parsing Error: {str(inner_e)[:40]}"
+                            reports.append({
+                                "original": item,
+                                "status": "Bad",
+                                "failed_rule": "Token Limit Timeout",
+                                "corrected": f"Skipped block protection triggered. Context: {error_label}"
+                            })
+                        time.sleep(0.1)
+                else:
+                    error_label = f"Truncation/Parsing Error: {str(e)[:40]}"
+                    for r in batch:
+                        reports.append({
+                            "original": r, 
+                            "status": "Bad", 
+                            "failed_rule": "Token Limit Timeout", 
+                            "corrected": f"Skipped block protection triggered. Context: {error_label}"
+                        })
+            
+            # --- PYTHON LOCAL METRICS CALCULATION ---
+            # Instead of forcing the LLM to count, we compute metrics locally via Python loops.
+            # This guarantees accuracy and prevents JSON truncation errors.
+            for item in reports:
+                if item["status"].strip().lower() == "good":
+                    combined_report["summary"]["good_count"] += 1
+                else:
+                    combined_report["summary"]["bad_count"] += 1
+                    
+                    # Match rules to update telemetry metrics categories dynamically
+                    rule = item["failed_rule"].lower()
+                    if "incose" in rule or "ambiguity" in rule or "verify" in rule:
+                        combined_report["summary"]["failed_incose_rules"] += 1
+                    elif "aspice" in rule or "trace" in rule:
+                        combined_report["summary"]["failed_aspice_rules"] += 1
+                    else:
+                        # Default category increment split fallback
+                        combined_report["summary"]["failed_incose_rules"] += 1
+
+                # Map metadata back if requirements were dictionaries
+                original_text = item["original"]
+                level = "General"
+                source_file = "N/A"
+                if is_dict:
+                    # Find matching requirement metadata
+                    match = next((r for r in requirements if r["text"] == original_text), None)
+                    if match:
+                        level = match.get("level", "General")
+                        source_file = match.get("source_file", "N/A")
                 
-                for r in batch:
-                    combined_report["detailed_report"].append({
-                        "original": r, 
-                        "status": "Bad", 
-                        "failed_rule": "Token Limit Timeout", 
-                        "corrected": f"Skipped block protection triggered. Context: {error_label}"
-                    })
+                # Add level and source to detailed report item
+                item["level"] = level
+                item["source_file"] = source_file
+                        
+                combined_report["detailed_report"].append(item)
             
             time.sleep(0.1)
 

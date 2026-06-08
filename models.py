@@ -21,9 +21,11 @@ class LLMManager:
         self.embedding_model = "nvidia/embeddings-nv-embed-qa-4"
 
     def get_response(self, messages, stream=True):
+        # Keep a sliding window of the last 10 messages to avoid token limit issues
+        trimmed_messages = messages[-10:]
         return self.client.chat.completions.create(
             model=self.model_name,
-            messages=messages,
+            messages=trimmed_messages,
             temperature=0.2,  # Fixed low for deterministic analysis stability
             top_p=1,
             max_tokens=2048,

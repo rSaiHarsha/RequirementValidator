@@ -1,7 +1,7 @@
 import os
 import numpy as np
 import pickle
-from models import LLMManager
+from Model.llm import LLMManager
 
 class RAGEngine:
     def __init__(self, llm_manager: LLMManager, db_path="vector_store.pkl"):
@@ -17,37 +17,32 @@ class RAGEngine:
             os.remove(self.db_path)
 
     def process_file(self, file_name, file_content):
-        import re
-        text = file_content.decode("utf-8", errors="ignore")
-        # Split blocks cleanly by double newline breaks
-        chunks = [c.strip() for c in text.split("\n\n") if len(c.strip()) > 20]
-        
-        final_chunks = []
-        for chunk in chunks:
-            # If a chunk is extremely long, break it into smaller sub-chunks
-            if len(chunk) > 1500:
-                sub_chunks = re.split(r'\n|\. ', chunk)
-                current_sub = ""
-                for sc in sub_chunks:
-                    sc = sc.strip()
-                    if not sc:
-                        continue
-                    if len(current_sub) + len(sc) < 1500:
-                        current_sub += "\n" + sc if current_sub else sc
-                    else:
-                        if len(current_sub) > 20:
-                            final_chunks.append(current_sub.strip())
-                        current_sub = sc
-                if len(current_sub) > 20:
-                    final_chunks.append(current_sub.strip())
-            else:
-                final_chunks.append(chunk)
-        
-        for chunk in final_chunks:
-            self.documents.append({
-                "source": file_name,
-                "text": chunk
-            })
+        """Decode and load file content blocks into memory."""
+        try:
+            text = file_content.decode("utf-8", errors="ignore")
+        except Exception:
+            text = str(file_content)
+
+        if file_name.lower().endswith(".csv"):
+            import csv
+            from io import StringIO
+            f = StringIO(text)
+            reader = csv.DictReader(f)
+            for i, row in enumerate(reader):
+                row_str = ", ".join(f"{k}: {v}" for k, v in row.items() if v)
+                if row_str:
+                    self.documents.append({
+                        "source": f"{file_name} (Row {i+1})",
+                        "text": row_str
+                    })
+        else:
+            # Segment by blank lines or paragraphs
+            blocks = [b.strip() for b in text.split("\n\n") if b.strip()]
+            for i, block in enumerate(blocks):
+                self.documents.append({
+                    "source": f"{file_name} (Block {i+1})",
+                    "text": block
+                })
 
     def train_engine(self, progress_callback):
         if not self.documents:
@@ -97,3 +92,28 @@ class RAGEngine:
         
         context_blocks = [self.documents[idx]["text"] for idx in top_indices if scores[idx] > 0.3]
         return "\n\n--- Context Block ---\n".join(context_blocks)
+
+    def query_batch(self, search_texts: list, top_k=3):
+        if not self.vectors or len(self.vectors) == 0 or not search_texts:
+            return [""] * len(search_texts)
+            
+        # Get embeddings in one API call
+        query_vectors = self.llm.get_embeddings_batch(search_texts)
+        
+        matrix = np.array(self.vectors)
+        matrix_norms = np.linalg.norm(matrix, axis=1)
+        
+        results = []
+        for q_vec in query_vectors:
+            query_vector = np.array(q_vec)
+            query_norm = np.linalg.norm(query_vector)
+            if query_norm == 0:
+                results.append("")
+                continue
+                
+            scores = np.dot(matrix, query_vector) / (matrix_norms * query_norm + 1e-8)
+            top_indices = np.argsort(scores)[::-1][:top_k]
+            context_blocks = [self.documents[idx]["text"] for idx in top_indices if scores[idx] > 0.3]
+            results.append("\n\n--- Context Block ---\n".join(context_blocks))
+            
+        return results

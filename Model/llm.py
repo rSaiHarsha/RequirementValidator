@@ -41,3 +41,17 @@ class LLMManager:
             extra_body={"input_type": "query", "truncate": "NONE"}
         )
         return response.data[0].embedding
+
+    def get_embeddings_batch(self, texts: List[str]):
+        """Generates embeddings for a list of strings in a single batch API call."""
+        if not texts:
+            return []
+        response = self.client.embeddings.create(
+            input=texts,
+            model=self.embedding_model,
+            encoding_format="float",
+            extra_body={"input_type": "query", "truncate": "NONE"}
+        )
+        # Ensure correct ordering by sorting on the index property
+        sorted_data = sorted(response.data, key=lambda x: x.index)
+        return [item.embedding for item in sorted_data]

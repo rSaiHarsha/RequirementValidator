@@ -1,0 +1,3 @@
+Name,Content,State,ASIL,Rationale,Covers(int),Refined(int)
+REQ-GOOD-001,"When a user inserts a valid payment card, the [ATM Client Terminal] shall prompt the user to enter their PIN within 2 seconds.",Released,ASIL-B,Ensures timely user interaction after physical input.,,
+REQ-BAD-052,The [ATM Controller] must process transactions as quickly as possible once the payload arrives.,InWork,ASIL-B,Ambiguous timing constraint ('as quickly as possible').,,

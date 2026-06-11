@@ -317,7 +317,7 @@ def correct_single_requirement(index, r, llm, rag, rag_context=None):
         )
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Action Part: \"{action_part}\"\nIssue: \"{r.rationale}\""}
+            {"role": "user", "content": f"Action Part: \"{action_part}\"\nFull Requirement Context: \"{r.content}\""}
         ]
         
         response = llm.get_response(messages, stream=False)
@@ -394,7 +394,7 @@ def correct_batch(batch_items, llm, rag):
             f"Index: {item['index']}\n"
             f"ID: {item['r'].name}\n"
             f"Action Part: \"{item['action_part']}\"\n"
-            f"Issue: \"{item['r'].rationale}\"\n"
+            f"Full Requirement Context: \"{item['r'].content}\"\n"
         )
         if item['rag_context']:
             user_content += f"Project-specific rules: \"{item['rag_context']}\"\n"

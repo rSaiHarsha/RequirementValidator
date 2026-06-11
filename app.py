@@ -21,6 +21,26 @@ if "messages" not in st.session_state:
 if "last_action" not in st.session_state:
     st.session_state.last_action = None
 
+# System Configuration Sidebar
+with st.sidebar:
+    st.header("⚙️ Configuration")
+    st.markdown("Customize system parameters and API fault-tolerance.")
+    
+    llm_retry_limit = st.slider(
+        "LLM Retry Limit",
+        min_value=0,
+        max_value=10,
+        value=3,
+        step=1,
+        help="Number of retries when an LLM API request fails (e.g. transient connection error, rate limits)."
+    )
+    st.session_state.llm_retries = llm_retry_limit
+    
+    st.markdown("---")
+    st.subheader("🤖 Active LLM Model")
+    st.info(f"**Model:**\n`{st.session_state.llm.model_name}`")
+    st.caption("Powered by NVIDIA NIM Core engine.")
+
 # Application Layout Tabs
 tab_rag, tab_analysis, tab_chat = st.tabs([
     "📂 RAG Knowledge Engine", 

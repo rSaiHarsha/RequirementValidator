@@ -330,7 +330,7 @@ class RAGEngine:
                 self.vectors.append(emb)
         self._save_local_db()
 
-    def search(self, search_text: str, collection_name: str = None, top_k: int = 3) -> list[dict]:
+    def search(self, search_text: str, collection_name=None, top_k: int = 3) -> list[dict]:
         """Perform similarity search and return detailed list of results with scores."""
         if collection_name == "None":
             return []
@@ -342,6 +342,8 @@ class RAGEngine:
                 collections_to_search = []
                 if not collection_name or collection_name == "All Collections":
                     collections_to_search = self.get_collections()
+                elif isinstance(collection_name, list):
+                    collections_to_search = collection_name
                 else:
                     collections_to_search = [collection_name]
 
@@ -388,7 +390,11 @@ class RAGEngine:
         valid_indices = []
         for idx, doc in enumerate(self.documents):
             doc_col = doc.get("collection", "")
-            if not collection_name or collection_name == "All Collections" or doc_col == collection_name:
+            if not collection_name or collection_name == "All Collections":
+                valid_indices.append(idx)
+            elif isinstance(collection_name, list) and doc_col in collection_name:
+                valid_indices.append(idx)
+            elif not isinstance(collection_name, list) and doc_col == collection_name:
                 valid_indices.append(idx)
 
         if not valid_indices:
@@ -412,13 +418,13 @@ class RAGEngine:
             })
         return results
 
-    def query(self, search_text: str, collection_name: str = None, top_k: int = 3) -> str:
+    def query(self, search_text: str, collection_name=None, top_k: int = 3) -> str:
         """Query standard interface returning concatenated context blocks (backward compatible)."""
         results = self.search(search_text, collection_name, top_k)
         context_blocks = [r["payload"]["text"] for r in results if r["score"] > 0.3]
         return "\n\n--- Context Block ---\n".join(context_blocks)
 
-    def query_batch(self, search_texts: list, collection_name: str = None, top_k: int = 3) -> list[str]:
+    def query_batch(self, search_texts: list, collection_name=None, top_k: int = 3) -> list[str]:
         """Query standard interface for multiple search texts returning concatenated context blocks."""
         if not search_texts:
             return []

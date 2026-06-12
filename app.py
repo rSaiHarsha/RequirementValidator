@@ -47,7 +47,16 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("📚 Collections & Documents")
     collections = st.session_state.rag.get_collections()
+    
     if collections:
+        selected_cols = st.multiselect(
+            "🎯 Active Collections for Analysis",
+            options=collections,
+            default=[],
+            help="Select which collections to use for requirement rules. Leave empty to use all."
+        )
+        st.session_state.target_rag_collections = selected_cols if selected_cols else None
+        
         for col in collections:
             with st.expander(f"📁 {col}"):
                 # Get documents for this collection

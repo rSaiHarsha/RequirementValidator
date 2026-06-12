@@ -34,7 +34,7 @@ def clean_and_parse_json(text: str) -> dict:
     text = text[start:end+1]
     return json.loads(text)
 
-def analyze_single_requirement(index, r, llm, rag, rag_context=None):
+def analyze_single_requirement(index, r, llm, rag, rag_context=None, selected_collections=None):
     try:
         prefix, action_part = split_ears(r.content)
         
@@ -42,7 +42,7 @@ def analyze_single_requirement(index, r, llm, rag, rag_context=None):
             rag_context = ""
             if rag:
                 try:
-                    rag_context = rag.query(action_part, top_k=2)
+                    rag_context = rag.query(action_part, collection_name=selected_collections, top_k=2)
                 except Exception:
                     pass
                 
@@ -100,7 +100,7 @@ def analyze_single_requirement(index, r, llm, rag, rag_context=None):
             "Rationale": f"LLM analysis failed: {str(e)}"
         }
 
-def analyze_batch(batch_items, llm, rag):
+def analyze_batch(batch_items, llm, rag, selected_collections=None):
     # batch_items is a list of tuples: (index, Requirement)
     # Returns a list of dicts mapping index -> analysis_result
     
@@ -120,7 +120,7 @@ def analyze_batch(batch_items, llm, rag):
         
     if rag:
         try:
-            rag_contexts = rag.query_batch(action_parts, top_k=2)
+            rag_contexts = rag.query_batch(action_parts, collection_name=selected_collections, top_k=2)
             for i, ctx in enumerate(rag_contexts):
                 req_details[i]["rag_context"] = ctx
         except Exception:
@@ -212,7 +212,7 @@ def analyze_batch(batch_items, llm, rag):
             
     return batch_results
 
-def analyze_requirements_batch(requirements: List[Requirement], llm, progress_callback=None, rag=None) -> List[Dict[str, Any]]:
+def analyze_requirements_batch(requirements: List[Requirement], llm, progress_callback=None, rag=None, selected_collections=None) -> List[Dict[str, Any]]:
     total = len(requirements)
     analysis_data = [None] * total
     
@@ -223,12 +223,12 @@ def analyze_requirements_batch(requirements: List[Requirement], llm, progress_ca
         
     def process_batch(batch):
         try:
-            return analyze_batch(batch, llm, rag)
+            return analyze_batch(batch, llm, rag, selected_collections)
         except Exception:
             # Fallback to single requirement analysis
             fallback_results = {}
             for idx, r in batch:
-                _, res = analyze_single_requirement(idx, r, llm, rag)
+                _, res = analyze_single_requirement(idx, r, llm, rag, selected_collections=selected_collections)
                 fallback_results[idx] = res
             return fallback_results
 
@@ -246,7 +246,7 @@ def analyze_requirements_batch(requirements: List[Requirement], llm, progress_ca
                 
     return analysis_data
 
-def analyze_requirements(requirements: List[Requirement], llm=None, progress_callback=None, rag=None, mode="single") -> List[Dict[str, Any]]:
+def analyze_requirements(requirements: List[Requirement], llm=None, progress_callback=None, rag=None, mode="single", selected_collections=None) -> List[Dict[str, Any]]:
     """
     Perform an AI-driven ASPICE/INCOSE audit using NVIDIA LLM concurrently or in batches,
     concentrating on the EARS action statement and referencing RAG rules if available.
@@ -259,21 +259,21 @@ def analyze_requirements(requirements: List[Requirement], llm=None, progress_cal
         return []
 
     if mode == "batch":
-        return analyze_requirements_batch(requirements, llm, progress_callback, rag)
+        return analyze_requirements_batch(requirements, llm, progress_callback, rag, selected_collections)
 
     # Pre-compute RAG contexts in a single batch embeddings query
     rag_contexts = [""] * total
     if rag:
         try:
             action_parts = [split_ears(r.content)[1] for r in requirements]
-            rag_contexts = rag.query_batch(action_parts, top_k=2)
+            rag_contexts = rag.query_batch(action_parts, collection_name=selected_collections, top_k=2)
         except Exception:
             pass
 
     analysis_data = [None] * total
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {
-            executor.submit(analyze_single_requirement, i, r, llm, rag, rag_contexts[i]): i 
+            executor.submit(analyze_single_requirement, i, r, llm, rag, rag_contexts[i], selected_collections): i 
             for i, r in enumerate(requirements)
         }
         
@@ -287,7 +287,7 @@ def analyze_requirements(requirements: List[Requirement], llm=None, progress_cal
                 
     return analysis_data
 
-def correct_single_requirement(index, r, llm, rag, rag_context=None):
+def correct_single_requirement(index, r, llm, rag, rag_context=None, selected_collections=None):
     try:
         prefix, action_part = split_ears(r.content)
         
@@ -295,7 +295,7 @@ def correct_single_requirement(index, r, llm, rag, rag_context=None):
             rag_context = ""
             if rag:
                 try:
-                    rag_context = rag.query(action_part, top_k=2)
+                    rag_context = rag.query(action_part, collection_name=selected_collections, top_k=2)
                 except Exception:
                     pass
     
@@ -343,7 +343,7 @@ def correct_single_requirement(index, r, llm, rag, rag_context=None):
     except Exception as e:
         return index, r, action_part, f"LLM Error: {str(e)}", prefix + action_part
 
-def correct_batch(batch_items, llm, rag):
+def correct_batch(batch_items, llm, rag, selected_collections=None):
     # batch_items: list of (idx, r)
     req_details = []
     action_parts = []
@@ -360,7 +360,7 @@ def correct_batch(batch_items, llm, rag):
         
     if rag:
         try:
-            rag_contexts = rag.query_batch(action_parts, top_k=2)
+            rag_contexts = rag.query_batch(action_parts, collection_name=selected_collections, top_k=2)
             for i, ctx in enumerate(rag_contexts):
                 req_details[i]["rag_context"] = ctx
         except Exception:
@@ -458,7 +458,7 @@ def correct_batch(batch_items, llm, rag):
             
     return batch_results
 
-def correct_requirements_batch(requirements: List[Requirement], llm, progress_callback=None, rag=None) -> List[Dict[str, Any]]:
+def correct_requirements_batch(requirements: List[Requirement], llm, progress_callback=None, rag=None, selected_collections=None) -> List[Dict[str, Any]]:
     total = len(requirements)
     correction_data_map = {}
     
@@ -469,12 +469,12 @@ def correct_requirements_batch(requirements: List[Requirement], llm, progress_ca
         
     def process_batch(batch):
         try:
-            return correct_batch(batch, llm, rag)
+            return correct_batch(batch, llm, rag, selected_collections)
         except Exception:
             # Fallback to single requirement correction
             fallback_results = {}
             for idx, r in batch:
-                _, r_obj, action_part, corrected_action, full_corrected = correct_single_requirement(idx, r, llm, rag)
+                _, r_obj, action_part, corrected_action, full_corrected = correct_single_requirement(idx, r, llm, rag, selected_collections=selected_collections)
                 fallback_results[idx] = (r_obj, action_part, corrected_action, full_corrected)
             return fallback_results
 
@@ -499,7 +499,7 @@ def correct_requirements_batch(requirements: List[Requirement], llm, progress_ca
     correction_data = [correction_data_map[k] for k in sorted(correction_data_map.keys())]
     return correction_data
 
-def correct_requirements(requirements: List[Requirement], llm=None, progress_callback=None, rag=None, mode="single") -> List[Dict[str, Any]]:
+def correct_requirements(requirements: List[Requirement], llm=None, progress_callback=None, rag=None, mode="single", selected_collections=None) -> List[Dict[str, Any]]:
     """
     Rewrite problematic requirements using the LLM concurrently or in batches, preserving precondition prefixes
     and applying RAG baseline knowledge rules if uploaded.
@@ -512,21 +512,21 @@ def correct_requirements(requirements: List[Requirement], llm=None, progress_cal
         return []
 
     if mode == "batch":
-        return correct_requirements_batch(requirements, llm, progress_callback, rag)
+        return correct_requirements_batch(requirements, llm, progress_callback, rag, selected_collections)
 
     # Pre-compute RAG contexts in a single batch embeddings query
     rag_contexts = [""] * total
     if rag:
         try:
             action_parts = [split_ears(r.content)[1] for r in requirements]
-            rag_contexts = rag.query_batch(action_parts, top_k=2)
+            rag_contexts = rag.query_batch(action_parts, collection_name=selected_collections, top_k=2)
         except Exception:
             pass
 
     correction_data_map = {}
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {
-            executor.submit(correct_single_requirement, i, r, llm, rag, rag_contexts[i]): i 
+            executor.submit(correct_single_requirement, i, r, llm, rag, rag_contexts[i], selected_collections): i 
             for i, r in enumerate(requirements)
         }
         

@@ -7,6 +7,15 @@ from Analysis.loader import load_uploaded_requirements
 
 def apply_df_styling(df_style, style_func, subset):
     """Safe fallback for Pandas styler mapping (uses .map for newer pandas and .applymap for older)."""
+    try:
+        df_cols = df_style.data.columns
+        existing_subset = [col for col in subset if col in df_cols]
+        if not existing_subset:
+            return df_style
+        subset = existing_subset
+    except Exception:
+        pass
+
     if hasattr(df_style, "map"):
         return df_style.map(style_func, subset=subset)
     return df_style.applymap(style_func, subset=subset)

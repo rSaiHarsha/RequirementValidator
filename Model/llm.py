@@ -3,7 +3,6 @@ from pathlib import Path
 from typing import List
 from openai import OpenAI
 from dotenv import load_dotenv
-import streamlit as st
 
 # Prioritize api_key.env fallback mapping
 env_path = Path(".env") if Path(".env").exists() else Path("api_key.env")
@@ -14,6 +13,7 @@ class LLMManager:
         # Check Streamlit secrets first, fallback to environment variable
         api_key = None
         try:
+            import streamlit as st
             api_key = st.secrets["API_KEY"]
         except Exception:
             pass
@@ -26,15 +26,12 @@ class LLMManager:
             api_key=api_key
         )
         self.model_name = model_name
-        self.embedding_model = "nvidia/embeddings-nv-embed-qa-4"
+        self.embedding_model = "nvidia/nv-embedqa-e5-v5"
+        self.retries = 3
 
     def _retry_api_call(self, api_func, *args, **kwargs):
         """Helper to execute API functions with transient failure retry logic using exponential backoff."""
-        try:
-            import streamlit as st
-            retries = st.session_state.get("llm_retries", 3)
-        except (ImportError, AttributeError):
-            retries = 3
+        retries = getattr(self, "retries", 3)
 
         import time
         last_exception = None
@@ -94,7 +91,7 @@ class LLMManager:
             input=texts,
             model=self.embedding_model,
             encoding_format="float",
-            extra_body={"input_type": "query", "truncate": "NONE"}
+            extra_body={"input_type": "passage", "truncate": "NONE"}
         )
         # Ensure correct ordering by sorting on the index property
         sorted_data = sorted(response.data, key=lambda x: x.index)

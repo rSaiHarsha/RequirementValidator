@@ -4,24 +4,6 @@ from typing import List, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from Model.requirement import Requirement
 
-def split_ears(text: str) -> (str, str):
-    """
-    Splits an EARS requirement into (precondition_prefix, action_part).
-    The action part typically starts with "the [System Name] shall/should/must/will".
-    """
-    # Search for the action subject followed by a modal verb (shall, should, must, will)
-    match = re.search(r"(?i)\bthe\s+\[?[^\]\n]+\]?\s+(?:shall|should|must|will)\b", text)
-    if match:
-        split_idx = match.start()
-        return text[:split_idx], text[split_idx:]
-    
-    # Fallback to splitting at "the [" if no modal verb is found
-    match_fallback = re.search(r"(?i)\bthe\s+\[", text)
-    if match_fallback:
-        split_idx = match_fallback.start()
-        return text[:split_idx], text[split_idx:]
-        
-    return "", text
 
 def clean_and_parse_json(text: str) -> dict:
     """Helper to safely extract and parse a JSON block from LLM markdown response."""
@@ -36,45 +18,45 @@ def clean_and_parse_json(text: str) -> dict:
 
 def analyze_single_requirement(index, r, llm, rag, rag_context=None, selected_collections=None):
     try:
-        prefix, action_part = split_ears(r.content)
-        
         if rag_context is None:
             rag_context = ""
             if rag:
                 try:
-                    rag_context = rag.query(action_part, collection_name=selected_collections, top_k=2)
+                    rag_context = rag.query(r.content, collection_name=selected_collections, top_k=2)
                 except Exception:
                     pass
                 
         system_prompt = (
-            "You are an expert systems engineering auditor specializing in ASPICE and INCOSE requirement standards.\n"
-            "Your task is to analyze the EARS system response (action part) of a requirement.\n"
-            "Under INCOSE/ASPICE rules:\n"
-            "1. The statement MUST use the standard modal verb 'shall' (do not use should, will, must, or behaves).\n"
-            "2. The statement MUST NOT contain vague or subjective terms (e.g. fast, quickly, beautifully, great, modern, creepy).\n"
-            "3. The statement MUST be verifiable and measurable.\n"
-            "4. The statement must not combine multiple distinct requirements (e.g. multiple actions).\n"
-            "\nYou are given both the Full Requirement (for complete context such as preconditions and triggers) and the specific Action Part under audit. Focus your compliance assessment and quality check on the Action Part using the Full Requirement as context."
+            "You are an expert systems engineering auditor specializing in ASPICE, INCOSE, and EARS requirement standards.\n"
+            "Your task is to structurally parse and analyze an engineering requirement.\n"
+            "1. EARS Syntax (Preconditions/Triggers): If the requirement has preconditions or triggers, they must start with EARS keywords (If, When, While, Where).\n"
+            "   (Note: If a precondition violates EARS syntax but the action part is flawless, flag it as a warning in your rationale but keep the Status as 'Passed'. If it's severely malformed or confusing, flag 'Review').\n"
+            "2. INCOSE Rules (System Response / Action Part):\n"
+            "   - MUST use the standard modal verb 'shall' (do not use should, will, must, or behaves).\n"
+            "   - MUST NOT contain vague or subjective terms (e.g. fast, quickly, beautifully, great, modern, creepy).\n"
+            "   - MUST be verifiable and measurable.\n"
+            "   - MUST NOT combine multiple distinct requirements (e.g. multiple actions).\n"
         )
         if rag_context:
             system_prompt += (
-                "\nIn addition to the standard rules, you MUST also enforce these project-specific rules retrieved from the knowledge base:\n"
+                "\nIn addition to standard rules, you MUST also conform to these project-specific rules retrieved from the knowledge base:\n"
                 f"{rag_context}\n"
             )
         system_prompt += (
-            "\nAnalyze the action part. If it violates any rules, return 'Review', name the broken rule, and explain why.\n"
+            "\nAnalyze the requirement structurally. Parse it internally into Preconditions, System Name, Modality, and System Response. Then evaluate the rules.\n"
+            "If it violates critical INCOSE rules, return 'Review', name the broken rule, and explain why.\n"
             "Otherwise, return 'Passed'.\n\n"
             "You must return your output strictly in JSON format matching this schema:\n"
             "{\n"
             "  \"status\": \"Passed\" or \"Review\",\n"
             "  \"failed_rule\": \"Rule name\" or \"None\",\n"
-            "  \"rationale\": \"Detailed explanation of the audit decision\"\n"
+            "  \"rationale\": \"Detailed explanation of the structural parsing and audit decision\"\n"
             "}\n"
             "Do not include any explanation or markdown formatting outside the JSON."
         )
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Full Requirement: \"{r.content}\"\nAction Part under audit: \"{action_part}\"\nOriginal Rationale: \"{r.rationale}\""}
+            {"role": "user", "content": f"Full Requirement: \"{r.content}\"\nOriginal Rationale: \"{r.rationale}\""}
         ]
         
         response = llm.get_response(messages, stream=False)
@@ -104,23 +86,19 @@ def analyze_batch(batch_items, llm, rag, selected_collections=None):
     # batch_items is a list of tuples: (index, Requirement)
     # Returns a list of dicts mapping index -> analysis_result
     
-    # 1. Split EARS and retrieve RAG rules in batch
     req_details = []
-    action_parts = []
+    full_reqs = []
     for idx, r in batch_items:
-        prefix, action_part = split_ears(r.content)
         req_details.append({
             "index": idx,
             "r": r,
-            "prefix": prefix,
-            "action_part": action_part,
             "rag_context": ""
         })
-        action_parts.append(action_part)
+        full_reqs.append(r.content)
         
     if rag:
         try:
-            rag_contexts = rag.query_batch(action_parts, collection_name=selected_collections, top_k=2)
+            rag_contexts = rag.query_batch(full_reqs, collection_name=selected_collections, top_k=2)
             for i, ctx in enumerate(rag_contexts):
                 req_details[i]["rag_context"] = ctx
         except Exception:
@@ -128,15 +106,17 @@ def analyze_batch(batch_items, llm, rag, selected_collections=None):
     
     # 2. Build prompts
     system_prompt = (
-        "You are an expert systems engineering auditor specializing in ASPICE and INCOSE requirement standards.\n"
-        "Your task is to analyze a batch of EARS system responses (action parts) of requirements.\n"
-        "Under INCOSE/ASPICE rules:\n"
-        "1. The statement MUST use the standard modal verb 'shall' (do not use should, will, must, or behaves).\n"
-        "2. The statement MUST NOT contain vague or subjective terms (e.g. fast, quickly, beautifully, great, modern, creepy).\n"
-        "3. The statement MUST be verifiable and measurable.\n"
-        "4. The statement must not combine multiple distinct requirements (e.g. multiple actions).\n"
+        "You are an expert systems engineering auditor specializing in ASPICE, INCOSE, and EARS requirement standards.\n"
+        "Your task is to structurally parse and analyze a batch of engineering requirements.\n"
+        "1. EARS Syntax (Preconditions/Triggers): If the requirement has preconditions or triggers, they must start with EARS keywords (If, When, While, Where).\n"
+        "   (Note: If the precondition violates EARS syntax but the action part is flawless, flag it as a warning in your rationale but keep the Status as 'Passed'. If severely malformed, flag 'Review').\n"
+        "2. INCOSE Rules (System Response / Action Part):\n"
+        "   - MUST use the standard modal verb 'shall' (do not use should, will, must, or behaves).\n"
+        "   - MUST NOT contain vague or subjective terms (e.g. fast, quickly, beautifully, great, modern, creepy).\n"
+        "   - MUST be verifiable and measurable.\n"
+        "   - MUST NOT combine multiple distinct requirements (e.g. multiple actions).\n"
         "For each requirement in the batch, check these rules and any project-specific rules provided.\n\n"
-        "\nYou are given both the Full Requirement (for complete context such as preconditions and triggers) and the specific Action Part under audit. Focus your compliance assessment and quality check on the Action Part using the Full Requirement as context."
+        "\nStructurally parse each requirement internally into Preconditions, System Name, Modality, and System Response. Then evaluate the rules.\n"
         "You must return your output strictly in JSON format matching this schema:\n"
         "{\n"
         "  \"results\": [\n"
@@ -145,7 +125,7 @@ def analyze_batch(batch_items, llm, rag, selected_collections=None):
         "      \"id\": \"Requirement ID (string)\",\n"
         "      \"status\": \"Passed\" or \"Review\",\n"
         "      \"failed_rule\": \"Rule name\" or \"None\",\n"
-        "      \"rationale\": \"Detailed explanation of the audit decision\"\n"
+        "      \"rationale\": \"Detailed explanation of the structural parsing and audit decision\"\n"
         "    },\n"
         "    ...\n"
         "  ]\n"
@@ -159,7 +139,6 @@ def analyze_batch(batch_items, llm, rag, selected_collections=None):
             f"Index: {item['index']}\n"
             f"ID: {item['r'].name}\n"
             f"Full Requirement: \"{item['r'].content}\"\n"
-            f"Action Statement: \"{item['action_part']}\"\n"
             f"Original Rationale: \"{item['r'].rationale}\"\n"
         )
         if item['rag_context']:
@@ -289,22 +268,21 @@ def analyze_requirements(requirements: List[Requirement], llm=None, progress_cal
 
 def correct_single_requirement(index, r, llm, rag, rag_context=None, selected_collections=None):
     try:
-        prefix, action_part = split_ears(r.content)
-        
         if rag_context is None:
             rag_context = ""
             if rag:
                 try:
-                    rag_context = rag.query(action_part, collection_name=selected_collections, top_k=2)
+                    rag_context = rag.query(r.content, collection_name=selected_collections, top_k=2)
                 except Exception:
                     pass
     
         system_prompt = (
             "You are a systems engineering expert specializing in ASPICE, ISO 26262, and EARS.\n"
-            "Your task is to correct/rewrite only the system response (action part) of a requirement if it violates INCOSE/ASPICE rules.\n"
+            "Your task is to correct/rewrite a flawed engineering requirement by structurally parsing it and fixing only the sections that violate rules.\n"
             "Rules:\n"
-            "1. Enforce the standard modal verb 'shall'. Replace should, will, must, behaves.\n"
-            "2. Remove vague or subjective terms and replace them with specific, measurable criteria.\n"
+            "1. EARS Syntax: Ensure preconditions/triggers start with standard EARS keywords (If, When, While, Where). Rewrite them if they are malformed.\n"
+            "2. Modality: Enforce the standard modal verb 'shall'. Replace should, will, must, behaves.\n"
+            "3. Action Part: Remove vague or subjective terms and replace them with specific, measurable criteria.\n"
         )
         if rag_context:
             system_prompt += (
@@ -312,55 +290,52 @@ def correct_single_requirement(index, r, llm, rag, rag_context=None, selected_co
                 f"{rag_context}\n"
             )
         system_prompt += (
-            "\n3. If the action part is already compliant and uses 'shall' properly without vague terms, return it EXACTLY as-is.\n"
-            "4. Return ONLY the corrected action part. Do not include prefix clauses, trigger phrases (like When, If), explanations, quotes, or markdown."
+            "\n4. If the requirement is already fully compliant, return it EXACTLY as-is.\n"
+            "5. Reconstruct the fully corrected requirement string. Return ONLY the fully corrected requirement string. Do not include explanations, quotes, or markdown format blocks."
         )
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Action Part: \"{action_part}\"\nFull Requirement Context: \"{r.content}\""}
+            {"role": "user", "content": f"Full Requirement Context: \"{r.content}\""}
         ]
         
         response = llm.get_response(messages, stream=False)
-        res_text = response.choices[0].message.content.strip()
+        full_corrected = response.choices[0].message.content.strip()
         
-        # Handle markdown code blocks
-        if res_text.startswith("```"):
-            lines = res_text.splitlines()
+        # Clean markdown code blocks
+        if full_corrected.startswith("```"):
+            lines = full_corrected.splitlines()
             if len(lines) >= 2:
                 if lines[0].startswith("```"):
                     lines = lines[1:]
                 if lines[-1].endswith("```"):
                     lines = lines[:-1]
-                res_text = "\n".join(lines).strip()
+                full_corrected = "\n".join(lines).strip()
         # Clean quotes if any
-        if (res_text.startswith('"') and res_text.endswith('"')) or (res_text.startswith("'") and res_text.endswith("'")):
-            res_text = res_text[1:-1].strip()
+        if (full_corrected.startswith('"') and full_corrected.endswith('"')) or (full_corrected.startswith("'") and full_corrected.endswith("'")):
+            full_corrected = full_corrected[1:-1].strip()
             
-        corrected_action = res_text if res_text else action_part
-        full_corrected = prefix + corrected_action
-        
-        return index, r, action_part, corrected_action, full_corrected
+        if not full_corrected:
+            full_corrected = r.content
+            
+        return index, r, r.content, full_corrected, full_corrected
     except Exception as e:
-        return index, r, action_part, f"LLM Error: {str(e)}", prefix + action_part
+        return index, r, r.content, f"LLM Error: {str(e)}", r.content
 
 def correct_batch(batch_items, llm, rag, selected_collections=None):
     # batch_items: list of (idx, r)
     req_details = []
-    action_parts = []
+    full_reqs = []
     for idx, r in batch_items:
-        prefix, action_part = split_ears(r.content)
         req_details.append({
             "index": idx,
             "r": r,
-            "prefix": prefix,
-            "action_part": action_part,
             "rag_context": ""
         })
-        action_parts.append(action_part)
+        full_reqs.append(r.content)
         
     if rag:
         try:
-            rag_contexts = rag.query_batch(action_parts, collection_name=selected_collections, top_k=2)
+            rag_contexts = rag.query_batch(full_reqs, collection_name=selected_collections, top_k=2)
             for i, ctx in enumerate(rag_contexts):
                 req_details[i]["rag_context"] = ctx
         except Exception:
@@ -368,32 +343,32 @@ def correct_batch(batch_items, llm, rag, selected_collections=None):
         
     system_prompt = (
         "You are a systems engineering expert specializing in ASPICE, ISO 26262, and EARS.\n"
-        "Your task is to analyze a batch of requirements and correct/rewrite only the system response (action part) if it violates INCOSE/ASPICE rules.\n"
+        "Your task is to analyze a batch of requirements and correct/rewrite them structurally.\n"
         "Rules:\n"
-        "1. Enforce the standard modal verb 'shall'. Replace should, will, must, behaves.\n"
-        "2. Remove vague or subjective terms and replace them with specific, measurable criteria.\n"
-        "3. If the action part is already compliant and uses 'shall' properly without vague terms, keep it EXACTLY as-is.\n\n"
-        "For each requirement in the batch, analyze and correct only the action statement part.\n\n"
+        "1. EARS Syntax: Ensure preconditions/triggers start with standard EARS keywords (If, When, While, Where). Rewrite them if they are malformed.\n"
+        "2. Modality: Enforce the standard modal verb 'shall'. Replace should, will, must, behaves.\n"
+        "3. Action Part: Remove vague or subjective terms and replace them with specific, measurable criteria.\n"
+        "4. If the requirement is already compliant, keep it EXACTLY as-is.\n\n"
+        "For each requirement in the batch, structurally parse and rewrite it if needed. Reconstruct the fully corrected requirement.\n\n"
         "You must return your output strictly in JSON format matching this schema:\n"
         "{\n"
         "  \"results\": [\n"
         "    {\n"
         "      \"index\": 0,\n"
         "      \"id\": \"Requirement ID (string)\",\n"
-        "      \"corrected_action\": \"The corrected action part only, preserving standard formatting. If already compliant, return the original action part verbatim.\"\n"
+        "      \"full_corrected\": \"The fully corrected requirement string.\"\n"
         "    },\n"
         "    ...\n"
         "  ]\n"
         "}\n"
-        "Do not include any prefix clauses, trigger phrases (like When, If), explanations, quotes, or markdown outside the JSON."
+        "Do not include any explanations, quotes, or markdown outside the JSON."
     )
     
-    user_content = "Please correct/rewrite the action statement of the following batch of requirements:\n\n"
+    user_content = "Please correct/rewrite the following batch of requirements:\n\n"
     for item in req_details:
         user_content += (
             f"Index: {item['index']}\n"
             f"ID: {item['r'].name}\n"
-            f"Action Part: \"{item['action_part']}\"\n"
             f"Full Requirement Context: \"{item['r'].content}\"\n"
         )
         if item['rag_context']:
@@ -431,28 +406,28 @@ def correct_batch(batch_items, llm, rag, selected_collections=None):
                     break
                     
         if res is not None:
-            corrected_action = res.get("corrected_action", "")
-            if corrected_action is None:
-                corrected_action = ""
+            full_corrected = res.get("full_corrected", "")
+            if full_corrected is None:
+                full_corrected = ""
             else:
-                corrected_action = str(corrected_action).strip()
+                full_corrected = str(full_corrected).strip()
+                
             # Clean markdown code blocks and quotes
-            if corrected_action.startswith("```"):
-                lines = corrected_action.splitlines()
+            if full_corrected.startswith("```"):
+                lines = full_corrected.splitlines()
                 if len(lines) >= 2:
                     if lines[0].startswith("```"):
                         lines = lines[1:]
                     if lines[-1].endswith("```"):
                         lines = lines[:-1]
-                    corrected_action = "\n".join(lines).strip()
-            if (corrected_action.startswith('"') and corrected_action.endswith('"')) or (corrected_action.startswith("'") and corrected_action.endswith("'")):
-                corrected_action = corrected_action[1:-1].strip()
+                    full_corrected = "\n".join(lines).strip()
+            if (full_corrected.startswith('"') and full_corrected.endswith('"')) or (full_corrected.startswith("'") and full_corrected.endswith("'")):
+                full_corrected = full_corrected[1:-1].strip()
                 
-            if not corrected_action:
-                corrected_action = item['action_part']
+            if not full_corrected:
+                full_corrected = item['r'].content
                 
-            full_corrected = item['prefix'] + corrected_action
-            batch_results[idx] = (item['r'], item['action_part'], corrected_action, full_corrected)
+            batch_results[idx] = (item['r'], item['r'].content, full_corrected, full_corrected)
         else:
             raise ValueError(f"Requirement index {idx} / ID '{item['r'].name}' not found in LLM response.")
             

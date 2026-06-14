@@ -9,7 +9,7 @@
             "justMyCode": true,
             "args": [
                 "run",
-                "${file}",
+                "app.py",
                 "--server.port",
                 "8501"
             ]

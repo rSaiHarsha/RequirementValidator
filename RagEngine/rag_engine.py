@@ -1,23 +1,150 @@
 import os
 import numpy as np
 import pickle
+import uuid
+from pathlib import Path
+from dotenv import load_dotenv
 from Model.llm import LLMManager
+from qdrant_client.models import PointStruct
+from qdrant_client import QdrantClient
+
+
+
+# Load environment variables
+env_path = Path(".env") if Path(".env").exists() else Path("api_key.env")
+load_dotenv(env_path)
+
+QDRANT_URL = os.environ.get("QDRANT_URL", "").strip()
+QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "").strip()
 
 class RAGEngine:
     def __init__(self, llm_manager: LLMManager, db_path="vector_store.pkl"):
         self.llm = llm_manager
         self.db_path = db_path
-        self.documents = []  
-        self.vectors = []    
+        self.documents = []  # List of dicts: {"id", "title", "text", "source", "collection", "metadata"}
+        self.vectors = []    # List of embedding lists
+        self.embed_dim = 1024  # Size matches nvidia/nv-embedqa-e5-v5 dimension
+
+        # Initialize Qdrant Client if variables are set
+        qdrant_url = os.environ.get("QDRANT_URL", "").strip()
+        qdrant_api_key = os.environ.get("QDRANT_API_KEY", "").strip()
+        
+        try:
+            import streamlit as st
+            if "QDRANT_URL" in st.secrets:
+                qdrant_url = st.secrets["QDRANT_URL"].strip()
+            if "QDRANT_API_KEY" in st.secrets:
+                qdrant_api_key = st.secrets["QDRANT_API_KEY"].strip()
+        except Exception:
+            pass
+
+        self.qdrant_client = None
+        if qdrant_url:
+            try:
+                from qdrant_client import QdrantClient
+                self.qdrant_client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
+                print(f"[RAGEngine] QdrantClient connected to URL: {qdrant_url}", flush=True)
+            except Exception as e:
+                print(f"[RAGEngine] Failed to initialize QdrantClient: {e}", flush=True)
+
+    def get_collections(self) -> list[str]:
+        """List all available collections/knowledge bases."""
+        if self.qdrant_client:
+            try:
+                return [c.name for c in self.qdrant_client.get_collections().collections]
+            except Exception as e:
+                print(f"[RAGEngine] Error fetching Qdrant collections: {e}", flush=True)
+                return []
+        else:
+            # Fallback to local Pickle documents
+            collections = set()
+            for doc in self.documents:
+                col = doc.get("collection")
+                if col:
+                    collections.add(col)
+            return sorted(list(collections))
+
+    def setup_collection(self, collection_name: str, recreate: bool = False):
+        """Setup a collection. Create it in Qdrant, or clean it locally."""
+        if self.qdrant_client:
+            from qdrant_client.models import VectorParams, Distance, PayloadSchemaType, TextIndexParams, TokenizerType
+            try:
+                existing = [c.name for c in self.qdrant_client.get_collections().collections]
+            except Exception:
+                existing = []
+
+            if collection_name in existing:
+                if recreate:
+                    try:
+                        self.qdrant_client.delete_collection(collection_name)
+                    except Exception as e:
+                        print(f"[RAGEngine] Failed to delete collection {collection_name}: {e}", flush=True)
+                else:
+                    return
+
+            try:
+                self.qdrant_client.create_collection(
+                    collection_name=collection_name,
+                    vectors_config=VectorParams(
+                        size=self.embed_dim,
+                        distance=Distance.COSINE,
+                        on_disk=False,
+                    ),
+                )
+                # Create Payload keyword indexes
+                for field in ["item_type", "item_id", "page"]:
+                    try:
+                        self.qdrant_client.create_payload_index(
+                            collection_name=collection_name,
+                            field_name=f"metadata.{field}",
+                            field_schema=PayloadSchemaType.KEYWORD,
+                        )
+                    except Exception:
+                        pass
+                # Create text search index
+                try:
+                    self.qdrant_client.create_payload_index(
+                        collection_name=collection_name,
+                        field_name="text",
+                        field_schema=TextIndexParams(
+                            type="text",
+                            tokenizer=TokenizerType.WORD,
+                            min_token_len=2,
+                            max_token_len=40,
+                            lowercase=True,
+                        ),
+                    )
+                except Exception:
+                    pass
+            except Exception as e:
+                print(f"[RAGEngine] Failed to create Qdrant collection: {e}", flush=True)
+        else:
+            # Local collection setup
+            if recreate:
+                indices_to_keep = [i for i, doc in enumerate(self.documents) if doc.get("collection") != collection_name]
+                self.documents = [self.documents[i] for i in indices_to_keep]
+                self.vectors = [self.vectors[i] for i in indices_to_keep]
+                self._save_local_db()
 
     def clear_database(self):
+        """Clear database. Resets local storage and deletes files."""
         self.documents = []
         self.vectors = []
         if os.path.exists(self.db_path):
-            os.remove(self.db_path)
+            try:
+                os.remove(self.db_path)
+            except Exception:
+                pass
+        
+        # If Qdrant is connected, we don't drop all remote collections automatically 
+        # to prevent data loss, but we reset reference state.
+        print("[RAGEngine] Local database cleared.", flush=True)
 
-    def process_file(self, file_name, file_content):
-        """Decode and load file content blocks into memory."""
+    def process_file(self, file_name, file_content, collection_name=None):
+        """Decode and load file content blocks into memory for training."""
+        if not collection_name:
+            raise ValueError("collection_name is required when processing a file.")
+
         try:
             text = file_content.decode("utf-8", errors="ignore")
         except Exception:
@@ -32,36 +159,60 @@ class RAGEngine:
                 row_str = ", ".join(f"{k}: {v}" for k, v in row.items() if v)
                 if row_str:
                     self.documents.append({
+                        "id": str(uuid.uuid4()),
+                        "title": f"Row {i+1}",
+                        "text": row_str,
                         "source": f"{file_name} (Row {i+1})",
-                        "text": row_str
+                        "collection": collection_name,
+                        "metadata": {"item_type": "row", "page": 1, "item_id": f"R{i+1}"}
                     })
         else:
             # Segment by blank lines or paragraphs
             blocks = [b.strip() for b in text.split("\n\n") if b.strip()]
             for i, block in enumerate(blocks):
                 self.documents.append({
+                    "id": str(uuid.uuid4()),
+                    "title": f"Block {i+1}",
+                    "text": block,
                     "source": f"{file_name} (Block {i+1})",
-                    "text": block
+                    "collection": collection_name,
+                    "metadata": {"item_type": "block", "page": 1}
                 })
 
-    def train_engine(self, progress_callback):
+    def train_engine(self, progress_callback, collection_name=None):
+        """Train engine: compute embeddings for loaded documents and save locally."""
+        if not collection_name:
+            raise ValueError("collection_name is required for training.")
+
+        # Filter documents that belong to this training cycle
+        new_docs = [doc for doc in self.documents if doc.get("collection") == collection_name and doc.get("id") not in [d.get("id") for d in self.documents if d in self.vectors]]
         if not self.documents:
             return False, "No documents loaded to train on."
         
-        self.vectors = []
+        # Batch upload to Qdrant or compute locally
         total = len(self.documents)
+        self.vectors = []
         
         for i, doc in enumerate(self.documents):
             embedding = self.llm.get_embedding(doc["text"])
             self.vectors.append(embedding)
-            progress_callback((i + 1) / total)
+            if progress_callback:
+                progress_callback((i + 1) / total)
         
-        with open(self.db_path, "wb") as f:
-            pickle.dump({"docs": self.documents, "vecs": self.vectors}, f)
+        self._save_local_db()
+
+        # If Qdrant is active, mirror the trained local database directly
+        if self.qdrant_client:
+            try:
+                self.setup_collection(collection_name, recreate=True)
+                self.ingest_chunks_batch(collection_name, self.documents)
+            except Exception as e:
+                print(f"[RAGEngine] Failed to sync training to Qdrant: {e}", flush=True)
             
         return True, f"Successfully trained and indexed {total} knowledge blocks!"
 
-    def load_trained_engine(self):
+    def load_trained_engine(self) -> bool:
+        """Load local Pickle + NumPy engine."""
         if os.path.exists(self.db_path):
             try:
                 with open(self.db_path, "rb") as f:
@@ -69,51 +220,216 @@ class RAGEngine:
                     self.documents = data["docs"]
                     self.vectors = data["vecs"]
                 return True
-            except Exception:
-                return False  # Soft reset on file corruptions
+            except Exception as e:
+                print(f"[RAGEngine] Failed to load local engine: {e}", flush=True)
+                return False
         return False
 
-    def query(self, search_text, top_k=3):
-        if not self.vectors or len(self.vectors) == 0:
-            return ""
+    def _save_local_db(self):
+        """Save documents and vectors locally as Pickle."""
+        try:
+            with open(self.db_path, "wb") as f:
+                pickle.dump({"docs": self.documents, "vecs": self.vectors}, f)
+        except Exception as e:
+            print(f"[RAGEngine] Failed to save local db: {e}", flush=True)
+
+    def ingest_chunk(self, collection_name: str, chunk_id: str, text: str, title: str, metadata: dict):
+        """Upsert a single document chunk."""
+        embedding = self.llm.get_embedding(text)
+
+        if self.qdrant_client:
+        
+            try:
+                point = PointStruct(
+                    id=chunk_id,
+                    vector=embedding,
+                    payload={
+                        "title": title,
+                        "text": text,
+                        "metadata": metadata
+                    }
+                )
+                self.qdrant_client.upsert(collection_name=collection_name, points=[point])
+            except Exception as e:
+                print(f"[RAGEngine] Qdrant ingest failed: {e}. Ingesting locally.", flush=True)
+
+        # Always ingest locally for backup & fallback
+        existing_idx = None
+        for idx, doc in enumerate(self.documents):
+            if doc.get("id") == chunk_id:
+                existing_idx = idx
+                break
+
+        doc_data = {
+            "id": chunk_id,
+            "title": title,
+            "text": text,
+            "source": f"Page {metadata.get('page', 'N/A')}",
+            "collection": collection_name,
+            "metadata": metadata
+        }
+
+        if existing_idx is not None:
+            self.documents[existing_idx] = doc_data
+            self.vectors[existing_idx] = embedding
+        else:
+            self.documents.append(doc_data)
+            self.vectors.append(embedding)
+        self._save_local_db()
+
+    def ingest_chunks_batch(self, collection_name: str, chunks: list):
+        """Batch upsert multiple document chunks."""
+        if not chunks:
+            return
+
+        texts = [c["text"] for c in chunks]
+        embeddings = self.llm.get_embeddings_batch(texts)
+
+        if self.qdrant_client:
             
+            try:
+                points = [
+                    PointStruct(
+                        id=chunk["id"],
+                        vector=emb,
+                        payload={
+                            "title": chunk.get("title", "Untitled"),
+                            "text": chunk["text"],
+                            "metadata": chunk.get("metadata", {})
+                        }
+                    )
+                    for chunk, emb in zip(chunks, embeddings)
+                ]
+                self.qdrant_client.upsert(collection_name=collection_name, points=points)
+            except Exception as e:
+                print(f"[RAGEngine] Qdrant batch ingest failed: {e}. Ingesting locally.", flush=True)
+
+        # Always save locally
+        for chunk, emb in zip(chunks, embeddings):
+            chunk_id = chunk["id"]
+            existing_idx = None
+            for idx, doc in enumerate(self.documents):
+                if doc.get("id") == chunk_id:
+                    existing_idx = idx
+                    break
+
+            doc_data = {
+                "id": chunk_id,
+                "title": chunk.get("title", "Untitled"),
+                "text": chunk["text"],
+                "source": f"Page {chunk.get('metadata', {}).get('page', 'N/A')}",
+                "collection": collection_name,
+                "metadata": chunk.get("metadata", {})
+            }
+
+            if existing_idx is not None:
+                self.documents[existing_idx] = doc_data
+                self.vectors[existing_idx] = emb
+            else:
+                self.documents.append(doc_data)
+                self.vectors.append(emb)
+        self._save_local_db()
+
+    def search(self, search_text: str, collection_name=None, top_k: int = 3) -> list[dict]:
+        """Perform similarity search and return detailed list of results with scores."""
+        if collection_name == "None":
+            return []
+
+        if self.qdrant_client:
+            try:
+                query_vector = self.llm.get_embedding(search_text)
+                
+                collections_to_search = []
+                if not collection_name or collection_name == "All Collections":
+                    collections_to_search = self.get_collections()
+                elif isinstance(collection_name, list):
+                    collections_to_search = collection_name
+                else:
+                    collections_to_search = [collection_name]
+
+                all_points = []
+                for col in collections_to_search:
+                    try:
+                        res = self.qdrant_client.query_points(
+                            collection_name=col,
+                            query=query_vector,
+                            limit=top_k,
+                            with_payload=True
+                        )
+                        for point in res.points:
+                            all_points.append({
+                                "id": point.id,
+                                "score": point.score,
+                                "payload": point.payload,
+                                "collection": col
+                            })
+                    except Exception:
+                        pass
+                
+                all_points.sort(key=lambda x: x["score"], reverse=True)
+                return all_points[:top_k]
+            except Exception as e:
+                print(f"[RAGEngine] Qdrant search failed: {e}. Falling back to local search.", flush=True)
+
+        # Local fallback
+        if not self.vectors or len(self.vectors) == 0:
+            return []
+
         query_vector = np.array(self.llm.get_embedding(search_text))
         matrix = np.array(self.vectors)
-        
+
         matrix_norms = np.linalg.norm(matrix, axis=1)
         query_norm = np.linalg.norm(query_vector)
-        
+
         if query_norm == 0:
-            return ""
-            
-        # Hardened calculation using 1e-8 epsilon adjustment against division anomalies
+            return []
+
         scores = np.dot(matrix, query_vector) / (matrix_norms * query_norm + 1e-8)
-        top_indices = np.argsort(scores)[::-1][:top_k]
-        
-        context_blocks = [self.documents[idx]["text"] for idx in top_indices if scores[idx] > 0.3]
+
+        # Filter by collection
+        valid_indices = []
+        for idx, doc in enumerate(self.documents):
+            doc_col = doc.get("collection", "")
+            if not collection_name or collection_name == "All Collections":
+                valid_indices.append(idx)
+            elif isinstance(collection_name, list) and doc_col in collection_name:
+                valid_indices.append(idx)
+            elif not isinstance(collection_name, list) and doc_col == collection_name:
+                valid_indices.append(idx)
+
+        if not valid_indices:
+            return []
+
+        sorted_valid = sorted(valid_indices, key=lambda idx: scores[idx], reverse=True)
+        top_indices = sorted_valid[:top_k]
+
+        results = []
+        for idx in top_indices:
+            doc = self.documents[idx]
+            results.append({
+                "id": doc.get("id", str(uuid.uuid4())),
+                "score": float(scores[idx]),
+                "payload": {
+                    "title": doc.get("title", "Untitled"),
+                    "text": doc.get("text", ""),
+                    "metadata": doc.get("metadata", {})
+                },
+                "collection": doc.get("collection", "")
+            })
+        return results
+
+    def query(self, search_text: str, collection_name=None, top_k: int = 3) -> str:
+        """Query standard interface returning concatenated context blocks (backward compatible)."""
+        results = self.search(search_text, collection_name, top_k)
+        context_blocks = [r["payload"]["text"] for r in results if r["score"] > 0.3]
         return "\n\n--- Context Block ---\n".join(context_blocks)
 
-    def query_batch(self, search_texts: list, top_k=3):
-        if not self.vectors or len(self.vectors) == 0 or not search_texts:
-            return [""] * len(search_texts)
-            
-        # Get embeddings in one API call
-        query_vectors = self.llm.get_embeddings_batch(search_texts)
-        
-        matrix = np.array(self.vectors)
-        matrix_norms = np.linalg.norm(matrix, axis=1)
-        
+    def query_batch(self, search_texts: list, collection_name=None, top_k: int = 3) -> list[str]:
+        """Query standard interface for multiple search texts returning concatenated context blocks."""
+        if not search_texts:
+            return []
+
         results = []
-        for q_vec in query_vectors:
-            query_vector = np.array(q_vec)
-            query_norm = np.linalg.norm(query_vector)
-            if query_norm == 0:
-                results.append("")
-                continue
-                
-            scores = np.dot(matrix, query_vector) / (matrix_norms * query_norm + 1e-8)
-            top_indices = np.argsort(scores)[::-1][:top_k]
-            context_blocks = [self.documents[idx]["text"] for idx in top_indices if scores[idx] > 0.3]
-            results.append("\n\n--- Context Block ---\n".join(context_blocks))
-            
+        for q in search_texts:
+            results.append(self.query(q, collection_name, top_k))
         return results

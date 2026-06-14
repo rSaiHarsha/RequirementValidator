@@ -1,32 +1,614 @@
 import streamlit as st
+import fitz  # pymupdf
+import re
+import uuid
+import json
+import time
 
-def render_rag_tab():
-    st.header("Knowledge Base Matrix")
-    st.caption("Upload baseline reference docs, standard operations manuals, or past specifications.")
+# Custom premium styling (Glassmorphism, custom cards, and badges)
+CSS_STYLES = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap');
+
+.rag-header {
+    background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 50%, #ec4899 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    font-weight: 800;
+    font-size: 2.2rem;
+    margin-bottom: 0.2rem;
+    text-align: center;
+}
+
+.rag-sub-header {
+    font-size: 1rem;
+    color: #94a3b8;
+    text-align: center;
+    margin-bottom: 2rem;
+}
+
+/* Custom Chunk Cards */
+.chunk-card {
+    background: rgba(30, 41, 59, 0.45);
+    border: 1px solid rgba(99, 102, 241, 0.15);
+    border-radius: 12px;
+    padding: 18px;
+    margin-bottom: 16px;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    backdrop-filter: blur(8px);
+}
+
+.chunk-card:hover {
+    transform: translateY(-2px);
+    border-color: rgba(99, 102, 241, 0.4);
+    box-shadow: 0 10px 20px rgba(99, 102, 241, 0.1);
+}
+
+.chunk-header {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.chunk-badge {
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+/* Status Badges */
+.chunk-badge.pending {
+    background: rgba(245, 158, 11, 0.15);
+    color: #fbbf24;
+    border: 1px solid rgba(245, 158, 11, 0.25);
+}
+
+.chunk-badge.ingested {
+    background: rgba(16, 185, 129, 0.15);
+    color: #34d399;
+    border: 1px solid rgba(16, 185, 129, 0.25);
+}
+
+.chunk-badge.error {
+    background: rgba(239, 68, 68, 0.15);
+    color: #f87171;
+    border: 1px solid rgba(239, 68, 68, 0.25);
+}
+
+.chunk-badge.page {
+    background: rgba(255, 255, 255, 0.08);
+    color: #cbd5e1;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.chunk-badge.type {
+    background: rgba(99, 102, 241, 0.15);
+    color: #a5b4fc;
+    border: 1px solid rgba(99, 102, 241, 0.25);
+}
+
+.chunk-badge.score {
+    background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+    color: #ffffff;
+}
+
+.chunk-badge.section {
+    background: rgba(59, 130, 246, 0.15);
+    color: #60a5fa;
+    border: 1px solid rgba(59, 130, 246, 0.2);
+}
+
+.chunk-body {
+    font-size: 0.925rem;
+    color: #cbd5e1;
+    line-height: 1.6;
+}
+
+/* Tag style */
+.tag-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
+}
+
+.keyword-tag {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 0.7rem;
+    color: #94a3b8;
+}
+</style>
+"""
+
+def extract_json_array(llm_output: str, show_error: bool = True) -> list[dict]:
+    """Extract and parse a JSON array from the raw LLM output."""
+    match = re.search(r'```(?:json)?\s*(.*?)\s*```', llm_output, re.DOTALL)
+    if match:
+        json_str = match.group(1).strip()
+    else:
+        json_str = llm_output.strip()
+        
+    start_idx = json_str.find('[')
+    end_idx = json_str.rfind(']')
+    if start_idx != -1 and end_idx != -1:
+        json_str = json_str[start_idx:end_idx+1]
+        
+    try:
+        data = json.loads(json_str, strict=False)
+        if isinstance(data, list):
+            return data
+        elif isinstance(data, dict):
+            return [data]
+    except Exception as e:
+        if show_error:
+            st.error(f"Failed to parse JSON array from LLM response: {e}")
+    return []
+
+def generate_chunks_with_llm(page_text: str, page_num: int) -> list[dict]:
+    """Chunk page text into technical specification entries using the active LLM."""
+    if not page_text.strip():
+        return []
+
+    system_prompt = (
+        "You are an expert systems engineer and technical writer. Your task is to read a raw text page "
+        "extracted from a technical manual/specification and break it down into one or more high-quality, "
+        "standalone text chunks optimized for semantic search and RAG.\n\n"
+        "Instructions:\n"
+        "1. Identify the logical topics, requirements, rules, configurations, or sections on the page.\n"
+        "2. For each identified topic, write a clean, detailed text description containing all technical terms, "
+        "codes, and variables. Retain full context so the chunk is self-explanatory.\n"
+        "3. If there are tables, lists, or structured data, format them into clear Markdown tables/lists within the text.\n"
+        "4. Assign appropriate metadata to each chunk.\n"
+        "5. Output the result ONLY as a valid JSON array of objects. Do not include any commentary outside the JSON.\n\n"
+        "Each object in the JSON array must follow this exact schema:\n"
+        "[\n"
+        "  {\n"
+        "    \"title\": \"A descriptive title of the topic\",\n"
+        "    \"text\": \"The detailed content containing technical details, codes, Markdown tables, etc. Retain full context.\",\n"
+        "    \"metadata\": {\n"
+        "      \"item_type\": \"requirement\", \"configuration\", \"architecture\", \"api\", \"definition\", or \"other\",\n"
+        "      \"item_id\": \"Any specific ID found (e.g., SWS_Can_00123, R12, C4) or null\",\n"
+        "      \"item_name\": \"The title or name of the requirement/topic\",\n"
+        "      \"keywords\": [\"kw1\", \"kw2\", \"kw3\"]\n"
+        "    }\n"
+        "  }\n"
+        "]"
+    )
+
+    user_prompt = f"Page Number: {page_num}\n\nRaw Page Text:\n{page_text}"
+
+    try:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+        
+        # Use our active LLMManager response builder
+        response = st.session_state.llm.get_response(messages, stream=False)
+        llm_output = response.choices[0].message.content
+        chunks = extract_json_array(llm_output, show_error=False)
+        
+        if not chunks:
+            # First attempt failed to yield valid JSON. Perform retry with self-correction prompt.
+            correction_user_prompt = (
+                f"{user_prompt}\n\n"
+                f"--- Previous Attempt Output ---\n{llm_output}\n\n"
+                "CRITICAL: The output above could not be parsed as valid JSON. "
+                "Please rewrite and return ONLY a valid JSON array matching the requested schema. "
+                "Do not include any introductory or concluding text outside the JSON block."
+            )
+            messages_retry = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": correction_user_prompt}
+            ]
+            print(f"[UI/rag_tab] JSON parsing failed. Retrying with self-correction prompt...", flush=True)
+            response_retry = st.session_state.llm.get_response(messages_retry, stream=False)
+            llm_output_retry = response_retry.choices[0].message.content
+            chunks = extract_json_array(llm_output_retry, show_error=True)
+
+        if chunks:
+            for c in chunks:
+                if not isinstance(c, dict):
+                    continue
+                if "metadata" not in c or not isinstance(c["metadata"], dict):
+                    c["metadata"] = {}
+                c["metadata"]["page"] = page_num
+                
+                if "text" not in c:
+                    for key in ["description", "content", "body"]:
+                        if key in c:
+                            c["text"] = c[key]
+                            break
+                if "text" not in c:
+                    c["text"] = json.dumps(c)
+            return chunks
+    except Exception as e:
+        print(f"[UI/rag_tab] LLM chunk generation error: {e}", flush=True)
+            
+    # Fallback chunk if LLM fails after retries
+    return [{
+        "title": f"Page {page_num} Raw Content",
+        "text": page_text,
+        "metadata": {
+            "item_type": "page_text",
+            "item_id": None,
+            "item_name": f"Raw content of page {page_num}",
+            "keywords": ["fallback"],
+            "page": page_num
+        }
+    }]
+
+# Dialog decorator for target collection settings and extraction parameters
+@st.dialog("Configure Target Collection & Parameters")
+def configure_target_collection_dialog(file_obj):
+    st.write(f"📂 **File Uploaded:** `{file_obj.name}`")
     
-    uploaded_files = st.file_uploader(
-        "Drop foundational files here", 
-        type=["txt", "csv", "md", "log"], 
-        accept_multiple_files=True
+    # 1. Target Collection Section
+    st.markdown("### 🗃️ 1. Target Collection")
+    collection_mode = st.radio(
+        "Choose target option:",
+        ["Add to Existing Collection", "Create New Collection"],
+        key="dlg_collection_mode"
     )
     
-    if st.button("🚀 Train RAG Engine", use_container_width=True):
-        if uploaded_files:
-            st.session_state.rag.clear_database()
-            for file in uploaded_files:
-                st.session_state.rag.process_file(file.name, file.read())
-            
-            prog_bar = st.progress(0.0)
-            status_box = st.empty()
-            
-            def update_progress(pct):
-                prog_bar.progress(pct)
-                status_box.text(f"Computing embeddings via NVIDIA endpoint: {int(pct * 100)}% Complete")
-            
-            success, msg = st.session_state.rag.train_engine(update_progress)
-            if success:
-                st.success(msg)
-            else:
-                st.error(msg)
+    target_collection = ""
+    existing_cols = st.session_state.rag.get_collections()
+    
+    if collection_mode == "Add to Existing Collection":
+        if existing_cols:
+            target_collection = st.selectbox("Select Target Collection:", existing_cols, key="dlg_select_col")
         else:
-            st.warning("Please upload files before starting engine calibration.")
+            st.warning("No existing collections found. Please select 'Create New Collection'.")
+    else:
+        raw_name = st.text_input("Enter New Collection Name:", placeholder="e.g. autosar_manuals", key="dlg_new_col_name").strip()
+        target_collection = re.sub(r'[^a-zA-Z0-9_-]', '_', raw_name) if raw_name else ""
+        if raw_name and target_collection != raw_name:
+            st.info(f"Cleaned collection name to: `{target_collection}`")
+            
+    # 2. Extraction Parameters Section
+    is_pdf = file_obj.name.lower().endswith(".pdf")
+    total_pages = 0
+    start_page = 1
+    end_page = 1
+    extract_ready = True
+    
+    if is_pdf:
+        st.markdown("### ⚙️ 2. PDF Extraction Parameters")
+        try:
+            pdf_bytes = file_obj.read()
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            total_pages = len(doc)
+            file_obj.seek(0)
+        except Exception as e:
+            total_pages = 0
+            st.error(f"Error reading PDF: {e}")
+            extract_ready = False
+            
+        if total_pages > 0:
+            st.info(f"Loaded specification contains {total_pages} pages.")
+            col_start, col_end = st.columns(2)
+            with col_start:
+                start_page = st.number_input("Start Page:", min_value=1, max_value=total_pages, value=1, key="dlg_start_page")
+            with col_end:
+                end_page = st.number_input("End Page:", min_value=1, max_value=total_pages, value=min(3, total_pages), key="dlg_end_page")
+                
+            if start_page > end_page:
+                st.error("Start Page cannot be greater than End Page.")
+                extract_ready = False
+        else:
+            extract_ready = False
+    else:
+        st.markdown("### ⚙️ 2. File Parameters")
+        st.info("Direct text content parsing will be used.")
+
+    if st.button("🧱 Confirm & Load Chunks", type="primary", disabled=not extract_ready, key="dlg_confirm_btn"):
+        if not target_collection:
+            st.error("Please enter/select a valid collection name.")
+        else:
+            st.session_state.target_collection_name = target_collection
+            st.session_state.collection_mode = collection_mode
+            st.session_state.start_page = int(start_page)
+            st.session_state.end_page = int(end_page)
+            st.session_state.dialog_completed = True
+            st.session_state.run_extraction = True
+            st.rerun()
+
+def render_rag_tab():
+    st.markdown(CSS_STYLES, unsafe_allow_html=True)
+    
+    st.markdown('<div class="rag-header">Knowledge Base Matrix</div>', unsafe_allow_html=True)
+    st.markdown('<div class="rag-sub-header">Ingest foundational specifications and standard guidelines into the RAG engine.</div>', unsafe_allow_html=True)
+
+    # Progressive state variables initialization
+    if "extracted_chunks" not in st.session_state:
+        st.session_state.extracted_chunks = None
+    if "target_collection_name" not in st.session_state:
+        st.session_state.target_collection_name = ""
+    if "dialog_completed" not in st.session_state:
+        st.session_state.dialog_completed = False
+    if "current_file" not in st.session_state:
+        st.session_state.current_file = None
+    if "run_extraction" not in st.session_state:
+        st.session_state.run_extraction = False
+    if "start_page" not in st.session_state:
+        st.session_state.start_page = 1
+    if "end_page" not in st.session_state:
+        st.session_state.end_page = 1
+
+    # File Uploader
+    uploaded_file = st.file_uploader(
+        "Drop foundational files here (.pdf, .txt, .csv, .md, .log)", 
+        type=["pdf", "txt", "csv", "md", "log"],
+        accept_multiple_files=False,
+        key="rag_file_uploader"
+    )
+
+    if uploaded_file is None:
+        # Reset state if cleared
+        st.session_state.dialog_completed = False
+        st.session_state.target_collection_name = ""
+        st.session_state.extracted_chunks = None
+        st.session_state.current_file = None
+        st.session_state.run_extraction = False
+    else:
+        # Reset if different file uploaded
+        if st.session_state.current_file != uploaded_file.name:
+            st.session_state.current_file = uploaded_file.name
+            st.session_state.dialog_completed = False
+            st.session_state.extracted_chunks = None
+            st.session_state.target_collection_name = ""
+            st.session_state.run_extraction = False
+            st.rerun()
+
+        # Trigger dialog configuration if not completed
+        if not st.session_state.dialog_completed:
+            configure_target_collection_dialog(uploaded_file)
+            st.warning("⚠️ Action Required: Configure collection settings and parameters inside the dialog.")
+            if st.button("Open Settings Dialog", key="reopen_dlg_btn"):
+                configure_target_collection_dialog(uploaded_file)
+
+        # Extraction logic execution
+        if st.session_state.get("run_extraction", False):
+            st.markdown("---")
+            st.markdown("### 🧱 Processing Document...")
+            st.write(f"📍 **Target Collection:** `{st.session_state.target_collection_name}`")
+            
+            target_collection = st.session_state.target_collection_name
+            collection_mode = st.session_state.get("collection_mode", "Create New Collection")
+            
+            # Recreate or setup collection metadata
+            if collection_mode == "Create New Collection":
+                st.session_state.rag.setup_collection(target_collection, recreate=True)
+            else:
+                st.session_state.rag.setup_collection(target_collection, recreate=False)
+
+            is_pdf = uploaded_file.name.lower().endswith(".pdf")
+            extracted_list = []
+
+            if is_pdf:
+                # PDF workflow
+                try:
+                    pdf_bytes = uploaded_file.read()
+                    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                    uploaded_file.seek(0)
+                except Exception as e:
+                    st.error(f"Error loading PDF: {e}")
+                    st.session_state.run_extraction = False
+                    st.stop()
+                    
+                pages_to_process = list(range(st.session_state.start_page, st.session_state.end_page + 1))
+                progress_bar = st.progress(0.0)
+                status_text = st.empty()
+
+                for idx, page_num in enumerate(pages_to_process):
+                    status_text.text(f"Extracting & chunking Page {page_num} of {st.session_state.end_page}...")
+                    try:
+                        page_text = doc[page_num - 1].get_text("text")
+                        page_chunks = generate_chunks_with_llm(page_text, page_num)
+                        
+                        for chunk in page_chunks:
+                            chunk["id"] = str(uuid.uuid4())
+                            chunk["status"] = "pending"
+                            extracted_list.append(chunk)
+                    except Exception as e:
+                        st.error(f"Error page {page_num}: {e}")
+                    progress_bar.progress((idx + 1) / len(pages_to_process))
+                    time.sleep(0.1)
+
+                status_text.text("Extraction completed successfully!")
+            else:
+                # Text files workflow
+                try:
+                    file_bytes = uploaded_file.read()
+                    uploaded_file.seek(0)
+                except Exception as e:
+                    st.error(f"Error loading file: {e}")
+                    st.session_state.run_extraction = False
+                    st.stop()
+                
+                # Mock RAG process_file interface to get standard chunks locally
+                temp_engine = st.session_state.rag
+                # Clear standard doc list temporarily
+                old_docs = temp_engine.documents
+                temp_engine.documents = []
+                temp_engine.process_file(uploaded_file.name, file_bytes, target_collection)
+                
+                for doc in temp_engine.documents:
+                    extracted_list.append({
+                        "id": doc["id"],
+                        "title": doc["title"],
+                        "text": doc["text"],
+                        "status": "pending",
+                        "metadata": doc["metadata"]
+                    })
+                # Restore engine documents
+                temp_engine.documents = old_docs
+
+            st.session_state.extracted_chunks = extracted_list
+            st.session_state.run_extraction = False
+            st.rerun()
+
+    # Extracted Chunks Preview
+    if st.session_state.extracted_chunks is not None:
+        st.markdown("---")
+        st.markdown("### 📝 Extracted Chunks Preview")
+        st.write(f"**Target Collection:** `{st.session_state.target_collection_name}`")
+        
+        chunks = st.session_state.extracted_chunks
+        
+        # Check matching ingestion status from memory
+        for chunk in chunks:
+            # Check if chunk ID already in locally loaded RAGEngine
+            local_exists = any(doc.get("id") == chunk["id"] for doc in st.session_state.rag.documents)
+            if local_exists:
+                chunk["status"] = "ingested"
+
+        pending_count = sum(1 for c in chunks if c["status"] == "pending")
+        ingested_count = sum(1 for c in chunks if c["status"] == "ingested")
+        
+        st.write(f"**Total Chunks:** {len(chunks)} | **Pending:** {pending_count} | **Ingested:** {ingested_count}")
+        
+        col_bulk, col_clear = st.columns(2)
+        with col_bulk:
+            if pending_count > 0:
+                if st.button("📥 Upload Chunks to vectorDB", type="primary", use_container_width=True, key="ingest_all_btn"):
+                    with st.spinner("Embedding and uploading chunks..."):
+                        try:
+                            pending_list = [c for c in chunks if c["status"] == "pending"]
+                            st.session_state.rag.ingest_chunks_batch(st.session_state.target_collection_name, pending_list)
+                            
+                            for c in pending_list:
+                                c["status"] = "ingested"
+                                
+                            st.success("Successfully ingested all pending chunks!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Bulk ingestion failed: {e}")
+            else:
+                st.success("All chunks have been ingested successfully!")
+                
+        with col_clear:
+            if st.button("🧹 Clear Extracted Chunks", use_container_width=True, key="clear_extracted_btn"):
+                st.session_state.extracted_chunks = None
+                st.session_state.target_collection_name = ""
+                st.session_state.dialog_completed = False
+                st.session_state.run_extraction = False
+                st.rerun()
+                
+        st.markdown("---")
+        
+        # Expander for individual chunks
+        with st.expander("Chunks Created", expanded=True):
+            for idx, chunk in enumerate(chunks):
+                meta = chunk.get("metadata", {})
+                title = chunk.get("title", "Untitled")
+                text = chunk.get("text", "")
+                item_type = meta.get("item_type", "N/A")
+                item_id = meta.get("item_id") or "N/A"
+                page = meta.get("page", 1)
+                keywords = meta.get("keywords", [])
+                status = chunk.get("status", "pending")
+                
+                status_label = "Pending"
+                if status == "ingested":
+                    status_label = "Ingested"
+                elif status == "error":
+                    status_label = "Error"
+                    
+                safe_text = text.replace("<", "&lt;").replace(">", "&gt;")
+                safe_title = title.replace("<", "&lt;").replace(">", "&gt;")
+                safe_item_id = item_id.replace("<", "&lt;").replace(">", "&gt;")
+                
+                tags_html = "".join([f'<span class="keyword-tag">{kw}</span>' for kw in keywords])
+                
+                card_html = f"""
+                <div class="chunk-card">
+                    <div class="chunk-header">
+                        <span class="chunk-badge {status}">{status_label}</span>
+                        <span class="chunk-badge page">Page {page}</span>
+                        <span class="chunk-badge type">{item_type}</span>
+                        <span class="chunk-badge page">ID: {safe_item_id}</span>
+                    </div>
+                    <div class="chunk-body">
+                        <strong style="font-size:1.05rem; color:#f1f5f9;">{safe_title}</strong>
+                        <p style="margin-top:8px; margin-bottom:8px;">{safe_text}</p>
+                    </div>
+                    <div class="tag-container">
+                        {tags_html}
+                    </div>
+                </div>
+                """
+                st.markdown(card_html, unsafe_allow_html=True)
+                
+                col_btn, col_info = st.columns([1, 4])
+                with col_btn:
+                    if status == "pending":
+                        if st.button(f"📥 Ingest Chunk {idx+1}", key=f"ingest_indiv_{chunk['id']}", use_container_width=True):
+                            try:
+                                st.session_state.rag.ingest_chunk(
+                                    collection_name=st.session_state.target_collection_name,
+                                    chunk_id=chunk["id"],
+                                    text=text,
+                                    title=title,
+                                    metadata=meta
+                                )
+                                chunk["status"] = "ingested"
+                                st.success(f"Ingested Chunk {idx+1}!")
+                                st.rerun()
+                            except Exception as e:
+                                chunk["status"] = "error"
+                                st.error(f"Failed to ingest: {e}")
+                    elif status == "ingested":
+                        st.markdown("<span style='color:#34d399; font-weight:600; padding:6px 0; display:inline-block;'>✓ Added to collection</span>", unsafe_allow_html=True)
+                    else:
+                        st.markdown("<span style='color:#f87171; font-weight:600; padding:6px 0; display:inline-block;'>✗ Ingestion error</span>", unsafe_allow_html=True)
+                
+                st.markdown("<br>", unsafe_allow_html=True)
+
+    # Verification Tool
+    st.markdown("---")
+    with st.expander("🔍 Verify Collection Ingests (Run Query on Vector DB)"):
+        # Select from database collections dynamically
+        available_cols = st.session_state.rag.get_collections()
+        selected_verify_col = st.selectbox("Select target collection to search:", available_cols)
+        
+        test_query = st.text_input("Enter verification search query:", placeholder="e.g. lane keep assist", key="test_query_in")
+        limit = st.slider("Number of results to fetch:", min_value=1, max_value=5, value=2, key="test_limit_sld")
+        
+        if st.button("Search Vector DB", key="test_search_btn") and test_query:
+            with st.spinner("Searching..."):
+                try:
+                    search_results = st.session_state.rag.search(
+                        search_text=test_query,
+                        collection_name=selected_verify_col,
+                        top_k=limit
+                    )
+                    
+                    if not search_results:
+                        st.info("No matching chunks found in the selected collection.")
+                    else:
+                        for rank, r in enumerate(search_results, 1):
+                            payload = r["payload"]
+                            meta = payload.get("metadata", {})
+                            t = payload.get("title", "Untitled")
+                            txt = payload.get("text", "")
+                            p = meta.get("page", "N/A")
+                            itype = meta.get("item_type", "N/A")
+                            iid = meta.get("item_id", "N/A")
+                            score = r["score"]
+                            
+                            st.markdown(f"""
+                            **Match #{rank} (Similarity Score: {score:.4f})**
+                            * **Title:** `{t}` | **Page:** `{p}` | **Type:** `{itype}` | **ID:** `{iid}`
+                            * **Text:** {txt}
+                            ---
+                            """)
+                except Exception as e:
+                    st.error(f"Search verification failed: {e}")

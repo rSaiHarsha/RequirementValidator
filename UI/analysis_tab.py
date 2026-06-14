@@ -7,6 +7,15 @@ from Analysis.loader import load_uploaded_requirements
 
 def apply_df_styling(df_style, style_func, subset):
     """Safe fallback for Pandas styler mapping (uses .map for newer pandas and .applymap for older)."""
+    try:
+        df_cols = df_style.data.columns
+        existing_subset = [col for col in subset if col in df_cols]
+        if not existing_subset:
+            return df_style
+        subset = existing_subset
+    except Exception:
+        pass
+
     if hasattr(df_style, "map"):
         return df_style.map(style_func, subset=subset)
     return df_style.applymap(style_func, subset=subset)
@@ -77,6 +86,8 @@ def render_analysis_tab():
         )
         mode_val = "batch" if "Batch" in mode_label else "single"
         
+        selected_collections_val = st.session_state.get("target_rag_collections", None)
+            
         st.caption("Select an analysis target based on your uploaded specification deliverables:")
         
         cols = st.columns(3)
@@ -148,19 +159,24 @@ def render_analysis_tab():
                 def run_audit():
                     progress_bar = st.progress(0.0)
                     status_text = st.empty()
-                    def callback(curr, tot):
+                    df_placeholder = st.empty()
+                    def callback(curr, tot, current_data=None):
                         progress_bar.progress(curr / tot)
                         status_text.text(f"Auditing requirement {curr} of {tot}...")
+                        if current_data is not None and len(current_data) > 0:
+                            partial_df = pd.DataFrame(current_data)
+                            df_placeholder.dataframe(partial_df, use_container_width=True, height=400)
                     try:
-                        res = st.session_state.analyzer.analyze_requirements(swe1_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val)
+                        res = st.session_state.analyzer.analyze_requirements(swe1_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val)
                     finally:
                         progress_bar.empty()
                         status_text.empty()
+                        df_placeholder.empty()
                     return res
                     
                 analysis_data = get_cached_result(
                     ("analyse_swe1", mode_val),
-                    (swe1_files.name, swe1_files.size) if swe1_files else None,
+                    (swe1_files.name, swe1_files.size, tuple(selected_collections_val) if selected_collections_val else None) if swe1_files else None,
                     run_audit
                 )
                 df = pd.DataFrame(analysis_data)
@@ -185,19 +201,24 @@ def render_analysis_tab():
                 def run_audit():
                     progress_bar = st.progress(0.0)
                     status_text = st.empty()
-                    def callback(curr, tot):
+                    df_placeholder = st.empty()
+                    def callback(curr, tot, current_data=None):
                         progress_bar.progress(curr / tot)
                         status_text.text(f"Auditing requirement {curr} of {tot}...")
+                        if current_data is not None and len(current_data) > 0:
+                            partial_df = pd.DataFrame(current_data)
+                            df_placeholder.dataframe(partial_df, use_container_width=True, height=400)
                     try:
-                        res = st.session_state.analyzer.analyze_requirements(swe2_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val)
+                        res = st.session_state.analyzer.analyze_requirements(swe2_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val)
                     finally:
                         progress_bar.empty()
                         status_text.empty()
+                        df_placeholder.empty()
                     return res
                     
                 analysis_data = get_cached_result(
                     ("analyse_swe2", mode_val),
-                    (swe2_files.name, swe2_files.size) if swe2_files else None,
+                    (swe2_files.name, swe2_files.size, tuple(selected_collections_val) if selected_collections_val else None) if swe2_files else None,
                     run_audit
                 )
                 df = pd.DataFrame(analysis_data)
@@ -221,19 +242,24 @@ def render_analysis_tab():
                 def run_correction():
                     progress_bar = st.progress(0.0)
                     status_text = st.empty()
-                    def callback(curr, tot):
+                    df_placeholder = st.empty()
+                    def callback(curr, tot, current_data=None):
                         progress_bar.progress(curr / tot)
                         status_text.text(f"Correcting requirement {curr} of {tot}...")
+                        if current_data is not None and len(current_data) > 0:
+                            partial_df = pd.DataFrame(current_data)
+                            df_placeholder.dataframe(partial_df, use_container_width=True, height=400)
                     try:
-                        res = st.session_state.analyzer.correct_requirements(swe1_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val)
+                        res = st.session_state.analyzer.correct_requirements(swe1_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val)
                     finally:
                         progress_bar.empty()
                         status_text.empty()
+                        df_placeholder.empty()
                     return res
                     
                 correction_data = get_cached_result(
                     ("correct_swe1", mode_val),
-                    (swe1_files.name, swe1_files.size) if swe1_files else None,
+                    (swe1_files.name, swe1_files.size, tuple(selected_collections_val) if selected_collections_val else None) if swe1_files else None,
                     run_correction
                 )
                 df = pd.DataFrame(correction_data)
@@ -251,19 +277,24 @@ def render_analysis_tab():
                 def run_correction():
                     progress_bar = st.progress(0.0)
                     status_text = st.empty()
-                    def callback(curr, tot):
+                    df_placeholder = st.empty()
+                    def callback(curr, tot, current_data=None):
                         progress_bar.progress(curr / tot)
                         status_text.text(f"Correcting requirement {curr} of {tot}...")
+                        if current_data is not None and len(current_data) > 0:
+                            partial_df = pd.DataFrame(current_data)
+                            df_placeholder.dataframe(partial_df, use_container_width=True, height=400)
                     try:
-                        res = st.session_state.analyzer.correct_requirements(swe2_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val)
+                        res = st.session_state.analyzer.correct_requirements(swe2_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val)
                     finally:
                         progress_bar.empty()
                         status_text.empty()
+                        df_placeholder.empty()
                     return res
                     
                 correction_data = get_cached_result(
                     ("correct_swe2", mode_val),
-                    (swe2_files.name, swe2_files.size) if swe2_files else None,
+                    (swe2_files.name, swe2_files.size, tuple(selected_collections_val) if selected_collections_val else None) if swe2_files else None,
                     run_correction
                 )
                 df = pd.DataFrame(correction_data)
@@ -396,7 +427,7 @@ def render_analysis_tab():
 
         # Prepare Markdown Compliance Report using cached results
         file_name_label = active_files.name if active_files else "Requirements Specification"
-        active_metadata = (active_files.name, active_files.size) if active_files else None
+        active_metadata = (active_files.name, active_files.size, tuple(selected_collections_val) if selected_collections_val else None) if active_files else None
         
         def run_export_analysis():
             progress_bar = st.progress(0.0)
@@ -405,7 +436,7 @@ def render_analysis_tab():
                 progress_bar.progress(curr / tot)
                 status_text.text(f"Generating export audit {curr} of {tot}...")
             try:
-                res = st.session_state.analyzer.analyze_requirements(active_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val)
+                res = st.session_state.analyzer.analyze_requirements(active_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val)
             finally:
                 progress_bar.empty()
                 status_text.empty()
@@ -418,7 +449,7 @@ def render_analysis_tab():
                 progress_bar.progress(curr / tot)
                 status_text.text(f"Generating export corrections {curr} of {tot}...")
             try:
-                res = st.session_state.analyzer.correct_requirements(active_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val)
+                res = st.session_state.analyzer.correct_requirements(active_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val)
             finally:
                 progress_bar.empty()
                 status_text.empty()

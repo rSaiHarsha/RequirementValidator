@@ -9,7 +9,7 @@ env_path = Path(".env") if Path(".env").exists() else Path("api_key.env")
 load_dotenv(env_path)
 
 class LLMManager:
-    def __init__(self, model_name="nvidia/llama-3.3-nemotron-super-49b-v1.5"):
+    def __init__(self, model_name="nvidia/nemotron-3-ultra-550b-a55b"):
         # Check Streamlit secrets first, fallback to environment variable
         api_key = None
         try:
@@ -56,9 +56,9 @@ class LLMManager:
             response = self.client.chat.completions.create(
                 model=self.model_name,
                 messages=trimmed_messages,
-                temperature=0.2,  # Fixed low for deterministic analysis stability
-                top_p=1,
-                max_tokens=2048,
+                temperature=0.05,  # Fixed low for deterministic analysis stability
+                top_p=0.85,
+                max_tokens=8192,
                 stream=stream
             )
             if not stream:

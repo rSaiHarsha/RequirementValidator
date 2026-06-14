@@ -159,14 +159,19 @@ def render_analysis_tab():
                 def run_audit():
                     progress_bar = st.progress(0.0)
                     status_text = st.empty()
-                    def callback(curr, tot):
+                    df_placeholder = st.empty()
+                    def callback(curr, tot, current_data=None):
                         progress_bar.progress(curr / tot)
                         status_text.text(f"Auditing requirement {curr} of {tot}...")
+                        if current_data is not None and len(current_data) > 0:
+                            partial_df = pd.DataFrame(current_data)
+                            df_placeholder.dataframe(partial_df, use_container_width=True, height=400)
                     try:
                         res = st.session_state.analyzer.analyze_requirements(swe1_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val)
                     finally:
                         progress_bar.empty()
                         status_text.empty()
+                        df_placeholder.empty()
                     return res
                     
                 analysis_data = get_cached_result(
@@ -196,14 +201,19 @@ def render_analysis_tab():
                 def run_audit():
                     progress_bar = st.progress(0.0)
                     status_text = st.empty()
-                    def callback(curr, tot):
+                    df_placeholder = st.empty()
+                    def callback(curr, tot, current_data=None):
                         progress_bar.progress(curr / tot)
                         status_text.text(f"Auditing requirement {curr} of {tot}...")
+                        if current_data is not None and len(current_data) > 0:
+                            partial_df = pd.DataFrame(current_data)
+                            df_placeholder.dataframe(partial_df, use_container_width=True, height=400)
                     try:
                         res = st.session_state.analyzer.analyze_requirements(swe2_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val)
                     finally:
                         progress_bar.empty()
                         status_text.empty()
+                        df_placeholder.empty()
                     return res
                     
                 analysis_data = get_cached_result(
@@ -232,14 +242,19 @@ def render_analysis_tab():
                 def run_correction():
                     progress_bar = st.progress(0.0)
                     status_text = st.empty()
-                    def callback(curr, tot):
+                    df_placeholder = st.empty()
+                    def callback(curr, tot, current_data=None):
                         progress_bar.progress(curr / tot)
                         status_text.text(f"Correcting requirement {curr} of {tot}...")
+                        if current_data is not None and len(current_data) > 0:
+                            partial_df = pd.DataFrame(current_data)
+                            df_placeholder.dataframe(partial_df, use_container_width=True, height=400)
                     try:
                         res = st.session_state.analyzer.correct_requirements(swe1_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val)
                     finally:
                         progress_bar.empty()
                         status_text.empty()
+                        df_placeholder.empty()
                     return res
                     
                 correction_data = get_cached_result(
@@ -262,14 +277,19 @@ def render_analysis_tab():
                 def run_correction():
                     progress_bar = st.progress(0.0)
                     status_text = st.empty()
-                    def callback(curr, tot):
+                    df_placeholder = st.empty()
+                    def callback(curr, tot, current_data=None):
                         progress_bar.progress(curr / tot)
                         status_text.text(f"Correcting requirement {curr} of {tot}...")
+                        if current_data is not None and len(current_data) > 0:
+                            partial_df = pd.DataFrame(current_data)
+                            df_placeholder.dataframe(partial_df, use_container_width=True, height=400)
                     try:
                         res = st.session_state.analyzer.correct_requirements(swe2_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val)
                     finally:
                         progress_bar.empty()
                         status_text.empty()
+                        df_placeholder.empty()
                     return res
                     
                 correction_data = get_cached_result(

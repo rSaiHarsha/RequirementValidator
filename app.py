@@ -1,10 +1,13 @@
 import streamlit as st
-import pandas as pd
-from models import LLMManager
-from rag_engine import RAGEngine
-from analyzer import RequirementAnalyzer
+from Model.llm import LLMManager
+from RagEngine.rag_engine import RAGEngine
+from Analysis.analyzer import RequirementAnalyzer
+from UI.rag_tab import render_rag_tab
 
-st.set_page_config(page_title="NVIDIA Mission Critical Assistant", layout="wide")
+from UI.analysis_tab import render_analysis_tab
+from UI.chat_tab import render_chat_tab
+
+st.set_page_config(page_title="NVIDIA Mission Critical Assistant", layout="wide", initial_sidebar_state="collapsed")
 
 # Initialization Management
 if "llm" not in st.session_state:
@@ -16,6 +19,69 @@ if "analyzer" not in st.session_state:
     st.session_state.analyzer = RequirementAnalyzer(st.session_state.llm)
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "last_action" not in st.session_state:
+    st.session_state.last_action = None
+
+# System Configuration Sidebar
+with st.sidebar:
+    st.header("⚙️ Configuration")
+    st.markdown("Customize system parameters and API fault-tolerance.")
+    
+    llm_retry_limit = st.slider(
+        "LLM Retry Limit",
+        min_value=0,
+        max_value=10,
+        value=3,
+        step=1,
+        help="Number of retries when an LLM API request fails (e.g. transient connection error, rate limits)."
+    )
+    st.session_state.llm_retries = llm_retry_limit
+    if "llm" in st.session_state:
+        st.session_state.llm.retries = llm_retry_limit
+    
+    st.markdown("---")
+    st.subheader("🤖 Active LLM Model")
+    st.info(f"**Model:**\n`{st.session_state.llm.model_name}`")
+    st.caption("Powered by NVIDIA NIM Core engine.")
+
+    st.markdown("---")
+    st.subheader("📚 Collections & Documents")
+    collections = st.session_state.rag.get_collections()
+    
+    if collections:
+        selected_cols = st.multiselect(
+            "🎯 Active Collections for Analysis",
+            options=collections,
+            default=[],
+            help="Select which collections to use for requirement rules. Leave empty to use all."
+        )
+        st.session_state.target_rag_collections = selected_cols if selected_cols else None
+        
+        for col in collections:
+            with st.expander(f"📁 {col}"):
+                # Get documents for this collection
+                col_docs = [doc for doc in st.session_state.rag.documents if doc.get("collection") == col]
+                if col_docs:
+                    # Try to extract unique sources or names
+                    sources = set()
+                    for doc in col_docs:
+                        src = doc.get("source", "Unknown Source")
+                        # Try to strip block/page info to get the root document name if possible
+                        # e.g. "file.pdf (Block 1)" -> "file.pdf"
+                        if " (Block " in src:
+                            src = src.split(" (Block ")[0]
+                        elif src.startswith("Page "):
+                            # For Qdrant chunks without filenames, we can use title
+                            title = doc.get("title", "Untitled")
+                            src = f"{title} (Page {src.split(' ')[1]})"
+                        sources.add(src)
+                    
+                    for src in sorted(list(sources)):
+                        st.markdown(f"- 📄 {src}")
+                else:
+                    st.caption("No documents locally tracked.")
+    else:
+        st.info("No collections found.")
 
 # Application Layout Tabs
 tab_rag, tab_analysis, tab_chat = st.tabs([
@@ -24,123 +90,11 @@ tab_rag, tab_analysis, tab_chat = st.tabs([
     "💬 Nemotron Core Chat"
 ])
 
-# ==========================================
-# TAB 1: RAG ENGINE CONSOLE
-# ==========================================
 with tab_rag:
-    st.header("Knowledge Base Matrix")
-    st.caption("Upload baseline reference docs, standard operations manuals, or past specifications.")
-    
-    uploaded_files = st.file_uploader(
-        "Drop foundational files here", 
-        type=["txt", "csv", "md", "log"], 
-        accept_multiple_files=True
-    )
-    
-    if st.button("🚀 Train RAG Engine", use_container_width=True):
-        if uploaded_files:
-            st.session_state.rag.clear_database()
-            for file in uploaded_files:
-                st.session_state.rag.process_file(file.name, file.read())
-            
-            prog_bar = st.progress(0.0)
-            status_box = st.empty()
-            
-            def update_progress(pct):
-                prog_bar.progress(pct)
-                status_box.text(f"Computing embeddings via NVIDIA endpoint: {int(pct * 100)}% Complete")
-            
-            success, msg = st.session_state.rag.train_engine(update_progress)
-            if success:
-                st.success(msg)
-            else:
-                st.error(msg)
-        else:
-            st.warning("Please upload files before starting engine calibration.")
+    render_rag_tab()
 
-# ==========================================
-# TAB 2: REQUIREMENT ANALYSIS INTERFACE
-# ==========================================
 with tab_analysis:
-    st.header("INCOSE / ASPICE Automated Audit Tool")
-    
-    req_files = st.file_uploader("Upload Specs Requirements Documents", type=["txt", "md"], accept_multiple_files=True)
-    
-    if st.button("📊 Run Deep Quality Analysis"):
-        if req_files:
-            all_reqs = []
-            for f in req_files:
-                all_reqs.extend(st.session_state.analyzer.parse_requirements(f.read()))
-            
-            with st.spinner("Analyzing ruleset compliance using Nvidia Nemotron..."):
-                rag_context = ""
-                if st.session_state.rag.vectors:
-                    sample_query = " ".join(all_reqs[:2])
-                    rag_context = st.session_state.rag.query(sample_query)
-                    st.info("ℹ️ Augmented verification active: Using RAG context data alongside LLM foundations.")
-                else:
-                    st.warning("⚠️ RAG Engine offline or empty. Defaulting to native out-of-the-box LLM context.")
-                
-                report = st.session_state.analyzer.analyze(all_reqs, rag_context)
-                
-                # Metrics Rendering
-                st.subheader("Executive Metrics Overview")
-                m_col1, m_col2, m_col3, m_col4 = st.columns(4)
-                m_col1.metric("Compliant Requirements", report["summary"]["good_count"])
-                m_col2.metric("Non-Compliant Blocks", report["summary"]["bad_count"])
-                m_col3.metric("INCOSE Deficiencies", report["summary"]["failed_incose_rules"])
-                m_col4.metric("ASPICE Core Violations", report["summary"]["failed_aspice_rules"])
-                
-                # Performance Charts
-                chart_data = pd.DataFrame({
-                    "Metrics": ["Compliant", "Non-Compliant", "INCOSE Flags", "ASPICE Flags"],
-                    "Count": [report["summary"]["good_count"], report["summary"]["bad_count"], report["summary"]["failed_incose_rules"], report["summary"]["failed_aspice_rules"]]
-                })
-                st.bar_chart(chart_data, x="Metrics", y="Count")
-                
-                # Dataframe Logging Table
-                st.subheader("Audited Requirements Log")
-                df_report = pd.DataFrame(report["detailed_report"])
-                st.dataframe(df_report, use_container_width=True)
-                
-                csv_data = df_report.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="📥 Export Compliance Corrected Report (.CSV)",
-                    data=csv_data,
-                    file_name="compliance_audit_report.csv",
-                    mime="text/csv"
-                )
-        else:
-            st.error("No requirement files discovered to initiate execution sequence.")
+    render_analysis_tab()
 
-# ==========================================
-# TAB 3: CORE CHATBOT INTERFACE
-# ==========================================
 with tab_chat:
-    st.header("Interactive Engineering Terminal")
-    
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    if prompt := st.chat_input("Query model parameter specifications..."):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        with st.chat_message("assistant"):
-            response_placeholder = st.empty()
-            full_response = ""
-            
-            response = st.session_state.llm.get_response(st.session_state.messages)
-            
-            for chunk in response:
-                if hasattr(chunk, 'choices') and chunk.choices:
-                    delta = chunk.choices[0].delta
-                    if hasattr(delta, 'content') and delta.content is not None:
-                        full_response += delta.content
-                        response_placeholder.markdown(full_response + "▌")
-            
-            response_placeholder.markdown(full_response)
-        
-        st.session_state.messages.append({"role": "assistant", "content": full_response})
+    render_chat_tab()

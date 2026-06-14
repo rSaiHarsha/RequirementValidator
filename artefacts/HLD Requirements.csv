@@ -1,0 +1,10 @@
+Name,Content,State,ASIL,Rationale,Covers(int),Refined(int)
+REQ-GOOD-001,"When a user inserts a valid payment card, the [ATM Client Terminal] shall prompt the user to enter their PIN within 2 seconds.",Released,ASIL-B,Ensures timely user interaction after physical input.,,
+REQ-GOOD-002,"Where an encrypted handshake is initiated, the [ATM Controller] shall validate the connection within 500 milliseconds before accepting the Transaction Payload.",Released,ASIL-D,Secures the middleware communication channel.,,
+REQ-GOOD-003,"When the user selects a withdrawal amount, the [ATM Client Terminal] shall transmit the transaction payload to the [ATM Controller].",Released,ASIL-B,Triggers the core transaction flow.,,
+REQ-GOOD-004,"If the [ATM Controller] receives a Ledger Balance Query request, the [CBS Bank Host] shall return the account balance within 1 second.",Released,ASIL-B,Ensures timely balance verification from core banking.,,
+REQ-BAD-051,The [ATM Client Terminal] should be fast and secure when the user enters their PIN code.,InWork,ASIL-A,"Vague, non-measurable, uses non-binding 'should'.",,
+REQ-BAD-052,The [ATM Controller] must process transactions as quickly as possible once the payload arrives.,InWork,ASIL-B,Ambiguous timing constraint ('as quickly as possible').,,
+REQ-BAD-053,"When the user withdraws $100, the system must work beautifully and never crash.",InWork,ASIL-D,Subjective term ('beautifully') and unachievable metric ('never').,,
+REQ-BAD-054,"If the [CBS Bank Host] fails, it should fix itself and try to contact the database again somehow.",InWork,ASIL-B,"Not precise, ambiguous recovery action ('somehow').",,
+REQ-BAD-055,The [ATM Controller] shall handle user sessions and validate transactions and route messages and log errors simultaneously.,InWork,ASIL-B,Combines multiple distinct requirements into a single line.,,

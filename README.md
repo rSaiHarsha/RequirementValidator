@@ -16,10 +16,10 @@
     
 - [ ] Requirement Analysis
     - [x] Create basic backend code to serve the frontend functionality.
-    - [ ] Fix the issue with message size that is being sent to the model, where model is unable to process due to the token length limit, Check if breaking the message into smaller arrays would help
+    - [x] Fix the issue with message size that is being sent to the model, where model is unable to process due to the token length limit, Check if breaking the message into smaller arrays would help
     - [ ] Add an option to process requirements input files in the form of .csv/.xlsx/.txt
     - [ ] The csv parsing shall pass the description of the requirement based on header dynamically since the requirement tools like doors, TRM can generate different header text, like ID, description etc.
-    - [ ] Provide options to upload different levels of requirements like automotive V cycle SWE.1, SWE.2 etc.
+    - [x] Provide options to upload different levels of requirements like automotive V cycle SWE.1, SWE.2 etc.
     - [ ] The tool shall process all the attached requirement files, if traceability is mentioned, check if the mentioned requirement is available in any other deck, if present check if the traceability is correct.
     - [ ] Generate the report on traceability quality, metrics.
 

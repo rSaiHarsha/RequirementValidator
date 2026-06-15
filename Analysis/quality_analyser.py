@@ -36,15 +36,25 @@ def analyze_single_requirement(index, r, llm, rag, rag_context=None, selected_co
                     pass
                 
         system_prompt = (
-            "You are an expert systems engineering auditor specializing in ASPICE, INCOSE, and EARS requirement standards.\n"
-            "Your task is to structurally parse and analyze an engineering requirement.\n"
-            "1. EARS Syntax (Preconditions/Triggers): If the requirement has preconditions or triggers, they must start with EARS keywords (If, When, While, Where).\n"
-            "   (Note: If a precondition violates EARS syntax but the action part is flawless, flag it as a warning in your rationale but keep the Status as 'Passed'. If it's severely malformed or confusing, flag 'Review').\n"
-            "2. INCOSE Rules (System Response / Action Part):\n"
-            "   - MUST use the standard modal verb 'shall' (do not use should, will, must, or behaves).\n"
-            "   - MUST NOT contain vague or subjective terms (e.g. fast, quickly, beautifully, great, modern, creepy).\n"
-            "   - MUST be verifiable and measurable.\n"
-            "   - MUST NOT combine multiple distinct requirements in a single sentence (e.g. multiple actions). (EXCEPTION: If the text contains multiple distinct requirement sentences clearly separated by newlines, this is ACCEPTABLE as long as each sentence is individually compliant and atomic).\n"
+            """
+            You are a Systems Engineering Requirements Auditor.
+
+Your task is to analyze an engineering requirement using:
+- INCOSE guidelines
+- EARS syntax
+
+You MUST:
+- Identify structural components (trigger, condition, system response)
+- Evaluate compliance against INCOSE guidelines , EARS syntax
+
+Return JSON only:
+
+{
+  "status": "Passed" or "Review",
+  "failed_rule": "Rule name" or "None",
+  "rationale": "Concise structured explanation"
+}
+            """
         )
         if rag_context:
             system_prompt += (
@@ -53,7 +63,7 @@ def analyze_single_requirement(index, r, llm, rag, rag_context=None, selected_co
             )
         system_prompt += (
             "\nAnalyze the requirement structurally. Parse it internally into Preconditions, System Name, Modality, and System Response. Then evaluate the rules.\n"
-            "If it violates critical INCOSE rules, return 'Review', name the broken rule, and explain why.\n"
+            "If it violates critical INCOSE rules and EARS Syntax, return 'Review', name the broken rule, and explain why.\n"
             "Otherwise, return 'Passed'.\n\n"
             "You must return your output strictly in JSON format matching this schema:\n"
             "{\n"
@@ -188,167 +198,21 @@ def correct_single_requirement(index, r, llm, rag, rag_context=None, selected_co
                 except Exception:
                     pass
     
-        system_prompt = """
-You are a Senior Systems Engineer, INCOSE Requirements Expert,
-EARS Expert, ASPICE Assessor, and ISO 26262 Functional Safety Engineer.
+        system_prompt = """You are a Senior Systems Engineer and Requirements Expert.
 
-Your task is to review and correct engineering requirements.
+Your task is to analyze and correct engineering requirements using:
+- INCOSE guidelines
+- EARS syntax
+Do not invent information.
 
-MANDATORY RULES
-
-1. EARS Compliance
-- Determine the correct EARS pattern:
-  - Ubiquitous
-  - Event Driven
-  - State Driven
-  - Optional Feature
-  - Unwanted Behavior
-  - Complex
-- Rewrite the requirement using the appropriate EARS syntax.
-- Use standard EARS keywords only:
-  - WHEN
-  - WHILE
-  - IF ... THEN
-  - WHERE
-
-2. Modal Verb
-- Use SHALL as the only modal verb.
-- Replace:
-  - should
-  - will
-  - must
-  - can
-  - may
-  - behaves
-with SHALL where appropriate.
-
-3. INCOSE Compliance
-Ensure each requirement is:
-- Necessary
-- Correct
-- Unambiguous
-- Complete
-- Singular
-- Feasible
-- Verifiable
-- Consistent
-- Traceable
-- Implementation Free
-
-4. Atomic Requirement Rule
-A requirement shall contain EXACTLY ONE system behavior.
-
-ONE SHALL = ONE REQUIREMENT.
-
-Split the requirement if:
-- Multiple actions occur after SHALL.
-- Multiple verbs are connected by AND.
-- Multiple verbs are connected by OR.
-- Multiple actions are separated by commas.
-- Detection and reaction are combined.
-- Calculation and transmission are combined.
-- Monitoring and reporting are combined.
-- Fault detection and fault handling are combined.
-- Logging and notification are combined.
-
-When splitting:
-- Repeat the exact same trigger/precondition.
-- Preserve all timing constraints.
-- Preserve all fault identifiers.
-- Preserve all DTC references.
-- Preserve all safety intent.
-- Preserve ASIL-related information.
-- Preserve thresholds and units.
-
-5. Ambiguity Removal
-Replace vague words such as:
-- appropriate
-- sufficient
-- normal
-- quickly
-- efficiently
-- robust
-- user-friendly
-- timely
-- optimized
-- safe
-
-with specific and measurable criteria whenever possible.
-
-6. Preservation Rules
-DO NOT:
-- Add new functionality.
-- Invent values.
-- Change thresholds.
-- Change timing constraints.
-- Change fault IDs.
-- Change DTC identifiers.
-- Change safety intent.
-
-ONLY correct violations.
-
-7. Self-Validation Before Returning
-Verify:
-- Every requirement contains SHALL.
-- Every requirement follows EARS syntax.
-- Every requirement contains exactly one behavior.
-- No ambiguous terms remain.
-- Timing constraints are preserved.
-- Units are preserved.
-- Safety intent is preserved.
-
-OUTPUT FORMAT
-
-Return JSON only.
+Return JSON only:
 
 {
-  "split_required": true,
-  "corrected_requirements": [
-    "WHEN condition, THE SYSTEM SHALL perform action A.",
-    "WHEN condition, THE SYSTEM SHALL perform action B."
-  ]
+  "split_required": boolean,
+  "corrected_requirements": [string]
 }
+ """
 
-If no correction is needed:
-
-{
-  "split_required": false,
-  "corrected_requirements": [
-    "<original requirement exactly as provided>"
-  ]
-}
-
-Do not include explanations.
-Do not include markdown.
-Do not include code fences.
-Return valid JSON only.
-"""
-
-        system_prompt += """
-
-EXAMPLE
-
-Input:
-
-IF VehSpd AliveCounter is unchanged for [3 consecutive cycles],
-THEN THE SYSTEM SHALL:
-- detect F_ALC_VehSpd within [10 ms]
-- react within [10 ms]
-- set DTC_101_VSPD_ALC
-- transition to safe state.
-
-Output:
-
-{
-  "split_required": true,
-  "corrected_requirements": [
-    "IF VehSpd AliveCounter is unchanged for [3 consecutive cycles], THEN THE SYSTEM SHALL detect F_ALC_VehSpd within [10 ms].",
-    "IF VehSpd AliveCounter is unchanged for [3 consecutive cycles], THEN THE SYSTEM SHALL react within [10 ms].",
-    "IF VehSpd AliveCounter is unchanged for [3 consecutive cycles], THEN THE SYSTEM SHALL set DTC_101_VSPD_ALC.",
-    "IF VehSpd AliveCounter is unchanged for [3 consecutive cycles], THEN THE SYSTEM SHALL transition to safe state."
-  ]
-}
-"""
         if rag_context:
             system_prompt += (
                 "\nIn addition to standard rules, you MUST also conform to these project-specific rules retrieved from the knowledge base:\n"
@@ -362,7 +226,7 @@ Output:
         
         response = llm.get_response(messages, stream=False)
 
-            raw_response = response.choices[0].message.content.strip()
+        raw_response = response.choices[0].message.content.strip()
 
         try:
             data = clean_and_parse_json(raw_response)

@@ -9,7 +9,7 @@ env_path = Path(".env") if Path(".env").exists() else Path("api_key.env")
 load_dotenv(env_path)
 
 class LLMManager:
-    def __init__(self, model_name="nvidia/nemotron-3-ultra-550b-a55b"):
+    def __init__(self, model_name="nvidia/llama-3.3-nemotron-super-49b-v1.5"):
         # Check Streamlit secrets first, fallback to environment variable
         api_key = None
         try:

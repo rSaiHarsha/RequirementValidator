@@ -6,14 +6,14 @@ import sys
 
 # Import the actual LLM from app or wherever
 # Actually, let's just initialize LLMManager
-from Model.llm_manager import LLMManager
+from Model.llm import LLMManager
 
 def main():
     llm = LLMManager()
     rag = None
     
     # A requirement with multiple actions
-    req = Requirement(name="REQ-1", content="If raining, the system shall measure temperature and calculate the pressure.", rationale="")
+    req = Requirement(name="REQ-1", content="If raining, the system shall measure temperature and calculate the pressure.", state="Draft", asil="QM", rationale="")
     
     # 1. First test analysis
     print("--- Original Analysis ---")

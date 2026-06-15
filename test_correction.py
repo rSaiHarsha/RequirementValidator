@@ -14,7 +14,7 @@ class MockLLM:
         return Resp()
 
 llm = MockLLM()
-req = Requirement(name="REQ-1", content="If raining, the system behaves quickly", rationale="")
+req = Requirement(name="REQ-1", content="If raining, the system behaves quickly", state="Draft", asil="QM", rationale="")
 
 res = correct_single_requirement(0, req, llm, None)
 print(res)

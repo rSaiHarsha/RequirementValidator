@@ -469,6 +469,7 @@ Output:
             response = llm.get_response(messages, stream=False)
 
             raw_response = response.choices[0].message.content.strip()
+            print(f"[DEBUG] Attempt {attempt} raw response:\n{raw_response}")
 
             try:
                 data = clean_and_parse_json(raw_response)
@@ -542,11 +543,14 @@ def correct_batch(batch_items, llm, rag, selected_collections=None):
         })
         full_reqs.append(r.content)
         
+    rag_context_map = {}
     if rag:
         try:
             rag_contexts = rag.query_batch(full_reqs, collection_name=selected_collections, top_k=2)
             for i, ctx in enumerate(rag_contexts):
                 req_details[i]["rag_context"] = ctx
+                idx = req_details[i]["index"]
+                rag_context_map[idx] = ctx
         except Exception:
             pass
         
@@ -656,8 +660,9 @@ def correct_batch(batch_items, llm, rag, selected_collections=None):
     for idx, (r_obj, original_text, action_part, full_corrected) in batch_results.items():
         v_res = verify_res.get(idx, {})
         if v_res.get("Status") == "Review":
+            local_rag_ctx = rag_context_map.get(idx, "")
             _, _, _, _, retried_corrected = correct_single_requirement(
-                idx, r_obj, llm, rag, None, selected_collections,
+                idx, r_obj, llm, rag, local_rag_ctx, selected_collections,
                 feedback_rule=v_res.get("Failed Rule"),
                 feedback_rationale=v_res.get("Rationale"),
                 initial_text=full_corrected

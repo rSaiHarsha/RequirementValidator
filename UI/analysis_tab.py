@@ -22,19 +22,8 @@ def apply_df_styling(df_style, style_func, subset):
 
 
 def get_cached_result(action_key, current_metadata, compute_func):
-    if "analysis_cache" not in st.session_state:
-        st.session_state.analysis_cache = {}
-    
-    cache = st.session_state.analysis_cache
-    if action_key in cache:
-        cached_metadata, cached_value = cache[action_key]
-        if cached_metadata == current_metadata:
-            return cached_value
-            
-    # Compute new value
-    value = compute_func()
-    cache[action_key] = (current_metadata, value)
-    return value
+    # Forcing bypass of cache to ensure new grouped data structure is executed
+    return compute_func()
 
 def render_analysis_tab():
     st.header("INCOSE / ASPICE Automated Audit Tool")
@@ -297,6 +286,7 @@ def render_analysis_tab():
                     (swe2_files.name, swe2_files.size, tuple(selected_collections_val) if selected_collections_val else None) if swe2_files else None,
                     run_correction
                 )
+                print("correction_data", correction_data)
                 df = pd.DataFrame(correction_data)
                 if not correction_data:
                     st.success("🎉 All architectural requirements are already compliant! No corrections needed.")
@@ -432,7 +422,7 @@ def render_analysis_tab():
         def run_export_analysis():
             progress_bar = st.progress(0.0)
             status_text = st.empty()
-            def callback(curr, tot):
+            def callback(curr, tot, current_data=None):
                 progress_bar.progress(curr / tot)
                 status_text.text(f"Generating export audit {curr} of {tot}...")
             try:
@@ -445,7 +435,7 @@ def render_analysis_tab():
         def run_export_correction():
             progress_bar = st.progress(0.0)
             status_text = st.empty()
-            def callback(curr, tot):
+            def callback(curr, tot, current_data=None):
                 progress_bar.progress(curr / tot)
                 status_text.text(f"Generating export corrections {curr} of {tot}...")
             try:

@@ -362,7 +362,7 @@ Output:
         
         response = llm.get_response(messages, stream=False)
 
-        raw_response = response.choices[0].message.content.strip()
+            raw_response = response.choices[0].message.content.strip()
 
         try:
             data = clean_and_parse_json(raw_response)

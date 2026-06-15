@@ -297,7 +297,7 @@ def configure_target_collection_dialog(file_obj):
             with col_start:
                 start_page = st.number_input("Start Page:", min_value=1, max_value=total_pages, value=1, key="dlg_start_page")
             with col_end:
-                end_page = st.number_input("End Page:", min_value=1, max_value=total_pages, value=min(3, total_pages), key="dlg_end_page")
+                end_page = st.number_input("End Page:", min_value=1, max_value=total_pages, value=total_pages, key="dlg_end_page")
                 
             if start_page > end_page:
                 st.error("Start Page cannot be greater than End Page.")
@@ -317,7 +317,7 @@ def configure_target_collection_dialog(file_obj):
             st.session_state.start_page = int(start_page)
             st.session_state.end_page = int(end_page)
             st.session_state.dialog_completed = True
-            st.session_state.run_extraction = True
+            st.session_state.trigger_extraction_phase = True
             st.rerun()
 
 def render_rag_tab():
@@ -337,6 +337,8 @@ def render_rag_tab():
         st.session_state.current_file = None
     if "run_extraction" not in st.session_state:
         st.session_state.run_extraction = False
+    if "trigger_extraction_phase" not in st.session_state:
+        st.session_state.trigger_extraction_phase = False
     if "start_page" not in st.session_state:
         st.session_state.start_page = 1
     if "end_page" not in st.session_state:
@@ -357,6 +359,7 @@ def render_rag_tab():
         st.session_state.extracted_chunks = None
         st.session_state.current_file = None
         st.session_state.run_extraction = False
+        st.session_state.trigger_extraction_phase = False
     else:
         # Reset if different file uploaded
         if st.session_state.current_file != uploaded_file.name:
@@ -365,6 +368,13 @@ def render_rag_tab():
             st.session_state.extracted_chunks = None
             st.session_state.target_collection_name = ""
             st.session_state.run_extraction = False
+            st.session_state.trigger_extraction_phase = False
+            st.rerun()
+
+        # Handle the intermediate bridge rerun to close the dialog before heavy extraction
+        if st.session_state.get("trigger_extraction_phase", False):
+            st.session_state.trigger_extraction_phase = False
+            st.session_state.run_extraction = True
             st.rerun()
 
         # Trigger dialog configuration if not completed
@@ -500,6 +510,7 @@ def render_rag_tab():
                 st.session_state.target_collection_name = ""
                 st.session_state.dialog_completed = False
                 st.session_state.run_extraction = False
+                st.session_state.trigger_extraction_phase = False
                 st.rerun()
                 
         st.markdown("---")

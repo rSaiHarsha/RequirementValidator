@@ -3,6 +3,7 @@ import pandas as pd
 import tempfile
 import os
 import re
+import json
 from Analysis.loader import load_uploaded_requirements
 
 def apply_df_styling(df_style, style_func, subset):
@@ -31,12 +32,32 @@ def process_task_with_controls(task_id, items, process_func, mode_val, selected_
     state_results = f"{task_id}_results"
     state_total = f"{task_id}_total"
     
+    cache_file = os.path.join(os.getcwd(), f".cache_{task_id}.json")
+    
     if state_status not in st.session_state:
         st.session_state[state_status] = "idle"
+        if os.path.exists(cache_file):
+            try:
+                os.remove(cache_file)
+            except Exception:
+                pass
+                
     if state_index not in st.session_state:
         st.session_state[state_index] = 0
-    if state_results not in st.session_state:
+        
+    if state_results not in st.session_state or len(st.session_state[state_results]) == 0:
         st.session_state[state_results] = []
+        # Attempt recovery from persistent disk cache
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, "r") as f:
+                    recovered = json.load(f)
+                if recovered:
+                    st.session_state[state_results] = recovered
+                    st.session_state[state_index] = len(recovered)
+            except Exception:
+                pass
+                
     if state_total not in st.session_state:
         st.session_state[state_total] = len(items)
 
@@ -60,6 +81,11 @@ def process_task_with_controls(task_id, items, process_func, mode_val, selected_
         st.session_state[state_status] = "running"
         st.session_state[state_index] = 0
         st.session_state[state_results] = []
+        if os.path.exists(cache_file):
+            try:
+                os.remove(cache_file)
+            except Exception:
+                pass
         st.rerun()
 
     progress_bar = st.progress(current_index / total if total > 0 else 0.0)
@@ -78,6 +104,13 @@ def process_task_with_controls(task_id, items, process_func, mode_val, selected_
                     # Save the EXACT state of the UI immediately to survive fast reruns
                     full_data = st.session_state[state_results] + current_data
                     st.session_state[f"{task_id}_live_results"] = full_data
+                    
+                    # HARD SAVE TO DISK to guarantee no vanishing
+                    try:
+                        with open(cache_file, "w") as f:
+                            json.dump(full_data, f)
+                    except Exception:
+                        pass
                     
                 overall_curr = min(current_index + curr, total)
                 progress_bar.progress(overall_curr / total if total > 0 else 0.0)
@@ -99,9 +132,23 @@ def process_task_with_controls(task_id, items, process_func, mode_val, selected_
                 new_results.extend(chunk_res)
                 st.session_state[state_results] = new_results
                 st.session_state[state_index] += len(chunk)
+                try:
+                    with open(cache_file, "w") as f:
+                        json.dump(new_results, f)
+                except Exception:
+                    pass
             else:
                 # If interrupted by Pause, recover exactly what was on screen
                 live = st.session_state.get(f"{task_id}_live_results", [])
+                
+                # If memory live is somehow empty, fallback to disk!
+                if not live and os.path.exists(cache_file):
+                    try:
+                        with open(cache_file, "r") as f:
+                            live = json.load(f)
+                    except Exception:
+                        pass
+                        
                 if len(live) > len(st.session_state[state_results]):
                     st.session_state[state_results] = live
                     st.session_state[state_index] = len(live)
@@ -213,6 +260,12 @@ def render_analysis_tab():
                         st.session_state[f"{action_id}_status"] = "running"
                         st.session_state[f"{action_id}_index"] = 0
                         st.session_state[f"{action_id}_results"] = []
+                        cache_file = os.path.join(os.getcwd(), f".cache_{action_id}.json")
+                        if os.path.exists(cache_file):
+                            try:
+                                os.remove(cache_file)
+                            except Exception:
+                                pass
                     elif current_status == "stopped":
                         st.session_state[f"{action_id}_status"] = "running"
             btn_index += 1

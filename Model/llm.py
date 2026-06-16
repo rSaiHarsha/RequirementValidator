@@ -56,8 +56,9 @@ class LLMManager:
             response = self.client.chat.completions.create(
                 model=self.model_name,
                 messages=trimmed_messages,
-                temperature=0.05,  # Fixed low for deterministic analysis stability
-                top_p=0.85,
+                temperature=0.0,
+                top_p=0.01,
+                seed=42,
                 max_tokens=8192,
                 stream=stream
             )

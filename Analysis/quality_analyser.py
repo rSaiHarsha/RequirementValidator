@@ -15,15 +15,30 @@ def clean_and_parse_json(text: str) -> dict:
         raise ValueError("No JSON block found in LLM response.")
     text = text[start:end+1]
     try:
-        return json.loads(text)
+        data = json.loads(text)
     except json.JSONDecodeError:
         import re
         text = re.sub(r',\s*}', '}', text)
         text = re.sub(r',\s*\]', ']', text)
         try:
-            return json.loads(text)
+            data = json.loads(text)
         except Exception as e:
             raise ValueError(f"Failed to parse JSON even after cleanup: {str(e)}")
+            
+    # Normalize dictionary to guarantee deterministic key/values
+    normalized_data = {}
+    if isinstance(data, dict):
+        for k, v in data.items():
+            key = k.strip()
+            # In python, keys can just remain as they are or we can lower case them
+            # We'll map them carefully for expected ones if needed
+            if isinstance(v, str):
+                v = v.strip()
+            if key.lower() == "status" and isinstance(v, str):
+                v = "Passed" if v.lower() == "passed" else "Review"
+            normalized_data[key.lower()] = v
+        return normalized_data
+    return data
 
 def analyze_single_requirement(index, r, llm, rag, rag_context=None, selected_collections=None):
     try:
@@ -36,25 +51,23 @@ def analyze_single_requirement(index, r, llm, rag, rag_context=None, selected_co
                     pass
                 
         system_prompt = (
-            """
-            You are a Systems Engineering Requirements Auditor.
-
-Your task is to analyze an engineering requirement using:
-- INCOSE guidelines
-- EARS syntax
-
-You MUST:
-- Identify structural components (trigger, condition, system response)
-- Evaluate compliance against INCOSE guidelines , EARS syntax
-
-Return JSON only:
-
-{
-  "status": "Passed" or "Review",
-  "failed_rule": "Rule name" or "None",
-  "rationale": "Concise structured explanation"
-}
-            """
+            "You are a strict, deterministic Systems Engineering Requirements Auditor.\n"
+            "Your task is to analyze an engineering requirement using INCOSE guidelines and EARS syntax.\n"
+            "You MUST:\n"
+            "- Identify structural components (trigger, condition, system response)\n"
+            "- Evaluate compliance against INCOSE guidelines, EARS syntax\n"
+            "\n"
+            "Rules for Output:\n"
+            "1. Return ONLY valid JSON exactly matching the schema below.\n"
+            "2. Do NOT include any explanation or markdown formatting outside the JSON.\n"
+            "3. Do NOT invent information. Output must be perfectly reproducible.\n"
+            "\n"
+            "JSON Schema:\n"
+            "{\n"
+            "  \"status\": \"Passed\" or \"Review\",\n"
+            "  \"failed_rule\": \"Rule name\" or \"None\",\n"
+            "  \"rationale\": \"Concise structured explanation\"\n"
+            "}"
         )
         if rag_context:
             system_prompt += (
@@ -63,15 +76,8 @@ Return JSON only:
             )
         system_prompt += (
             "\nAnalyze the requirement structurally. Parse it internally into Preconditions, System Name, Modality, and System Response. Then evaluate the rules.\n"
-            "If it violates critical INCOSE rules and EARS Syntax, return 'Review', name the broken rule, and explain why.\n"
-            "Otherwise, return 'Passed'.\n\n"
-            "You must return your output strictly in JSON format matching this schema:\n"
-            "{\n"
-            "  \"status\": \"Passed\" or \"Review\",\n"
-            "  \"failed_rule\": \"Rule name\" or \"None\",\n"
-            "  \"rationale\": \"Detailed explanation of the structural parsing and audit decision\"\n"
-            "}\n"
-            "Do not include any explanation or markdown formatting outside the JSON."
+            "If it violates critical INCOSE rules and EARS Syntax, status MUST be 'Review'. Name the broken rule, and explain why.\n"
+            "Otherwise, status MUST be 'Passed'."
         )
         messages = [
             {"role": "system", "content": system_prompt},
@@ -198,20 +204,21 @@ def correct_single_requirement(index, r, llm, rag, rag_context=None, selected_co
                 except Exception:
                     pass
     
-        system_prompt = """You are a Senior Systems Engineer and Requirements Expert.
-
-Your task is to analyze and correct engineering requirements using:
-- INCOSE guidelines
-- EARS syntax
-Do not invent information.
-
-Return JSON only:
-
-{
-  "split_required": boolean,
-  "corrected_requirements": [string]
-}
- """
+        system_prompt = (
+            "You are a strict, deterministic Senior Systems Engineer and Requirements Expert.\n"
+            "Your task is to analyze and correct engineering requirements using INCOSE guidelines and EARS syntax.\n"
+            "You MUST adhere to these strict rules:\n"
+            "1. Return ONLY valid JSON exactly matching the schema below.\n"
+            "2. Do NOT include any explanation or markdown formatting outside the JSON.\n"
+            "3. Do NOT invent information. Output must be perfectly reproducible.\n"
+            "4. Split the requirement if it contains multiple actions.\n"
+            "\n"
+            "JSON Schema:\n"
+            "{\n"
+            "  \"split_required\": boolean,\n"
+            "  \"corrected_requirements\": [string]\n"
+            "}"
+        )
 
         if rag_context:
             system_prompt += (

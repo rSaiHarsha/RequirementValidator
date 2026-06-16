@@ -3,6 +3,9 @@ import tempfile
 from typing import List
 from Model.requirement import Requirement
 
+import streamlit as st
+
+@st.cache_data(show_spinner=False)
 def load_uploaded_requirements(uploaded_file) -> List[Requirement]:
     """
     Saves an uploaded Streamlit file temporarily and loads it using the Requirement class.

@@ -3,6 +3,7 @@ import pandas as pd
 import tempfile
 import os
 import re
+import json
 from Analysis.loader import load_uploaded_requirements
 
 def apply_df_styling(df_style, style_func, subset):
@@ -22,19 +23,149 @@ def apply_df_styling(df_style, style_func, subset):
 
 
 def get_cached_result(action_key, current_metadata, compute_func):
-    if "analysis_cache" not in st.session_state:
-        st.session_state.analysis_cache = {}
+    # Forcing bypass of cache to ensure new grouped data structure is executed
+    return compute_func()
+
+def process_task_with_controls(task_id, items, process_func, mode_val, selected_collections_val, render_df_func=None):
+    state_status = f"{task_id}_status"
+    state_index = f"{task_id}_index"
+    state_results = f"{task_id}_results"
+    state_total = f"{task_id}_total"
     
-    cache = st.session_state.analysis_cache
-    if action_key in cache:
-        cached_metadata, cached_value = cache[action_key]
-        if cached_metadata == current_metadata:
-            return cached_value
+    cache_file = os.path.join(os.getcwd(), f".cache_{task_id}.json")
+    
+    if state_status not in st.session_state:
+        st.session_state[state_status] = "idle"
+        if os.path.exists(cache_file):
+            try:
+                os.remove(cache_file)
+            except Exception:
+                pass
+                
+    if state_index not in st.session_state:
+        st.session_state[state_index] = 0
+        
+    if state_results not in st.session_state or len(st.session_state[state_results]) == 0:
+        st.session_state[state_results] = []
+        # Attempt recovery from persistent disk cache
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, "r") as f:
+                    recovered = json.load(f)
+                if recovered:
+                    st.session_state[state_results] = recovered
+                    st.session_state[state_index] = len(recovered)
+            except Exception:
+                pass
+                
+    if state_total not in st.session_state:
+        st.session_state[state_total] = len(items)
+
+    status = st.session_state[state_status]
+    current_index = st.session_state[state_index]
+    results = st.session_state[state_results]
+    total = len(items)
+
+    col1, col2, col3 = st.columns(3)
+    
+    start_label = "▶️ Start" if current_index == 0 else "▶️ Resume"
+    if col1.button(start_label, disabled=(status == "running" or current_index >= total), key=f"start_{task_id}"):
+        st.session_state[state_status] = "running"
+        st.rerun()
+        
+    if col2.button("⏸️ Pause", disabled=(status != "running"), key=f"stop_{task_id}"):
+        st.session_state[state_status] = "stopped"
+        st.rerun()
+        
+    if col3.button("🔄 Restart", disabled=(status == "running" and current_index == 0), key=f"restart_{task_id}"):
+        st.session_state[state_status] = "running"
+        st.session_state[state_index] = 0
+        st.session_state[state_results] = []
+        if os.path.exists(cache_file):
+            try:
+                os.remove(cache_file)
+            except Exception:
+                pass
+        st.rerun()
+
+    progress_bar = st.progress(current_index / total if total > 0 else 0.0)
+    status_text = st.empty()
+    df_placeholder = st.empty()
+
+    if status == "running" and current_index < total:
+        chunk_size = 5 if mode_val == "single" else 10
+        status_text.text(f"Processing requirement {current_index + 1} of {total}...")
+        
+        chunk = items[current_index : current_index + chunk_size]
+        chunk_res = None
+        try:
+            def chunk_callback(curr, tot, current_data=None):
+                if current_data is not None:
+                    # Save the EXACT state of the UI immediately to survive fast reruns
+                    full_data = st.session_state[state_results] + current_data
+                    st.session_state[f"{task_id}_live_results"] = full_data
+                    
+                    # HARD SAVE TO DISK to guarantee no vanishing
+                    try:
+                        with open(cache_file, "w") as f:
+                            json.dump(full_data, f)
+                    except Exception:
+                        pass
+                    
+                overall_curr = min(current_index + curr, total)
+                progress_bar.progress(overall_curr / total if total > 0 else 0.0)
+                status_text.text(f"Processed requirement {overall_curr} of {total}...")
+                
+                if current_data is not None:
+                    df_partial = pd.DataFrame(st.session_state[f"{task_id}_live_results"])
+                    if not df_partial.empty:
+                        if render_df_func:
+                            render_df_func(df_partial, df_placeholder)
+                        else:
+                            df_placeholder.dataframe(df_partial, use_container_width=True, height=400)
+                            
+            chunk_res = process_func(chunk, progress_callback=chunk_callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val)
+        
+        finally:
+            if chunk_res is not None:
+                new_results = list(st.session_state[state_results])
+                new_results.extend(chunk_res)
+                st.session_state[state_results] = new_results
+                st.session_state[state_index] += len(chunk)
+                try:
+                    with open(cache_file, "w") as f:
+                        json.dump(new_results, f)
+                except Exception:
+                    pass
+            else:
+                # If interrupted by Pause, recover exactly what was on screen
+                live = st.session_state.get(f"{task_id}_live_results", [])
+                
+                # If memory live is somehow empty, fallback to disk!
+                if not live and os.path.exists(cache_file):
+                    try:
+                        with open(cache_file, "r") as f:
+                            live = json.load(f)
+                    except Exception:
+                        pass
+                        
+                if len(live) > len(st.session_state[state_results]):
+                    st.session_state[state_results] = live
+                    st.session_state[state_index] = len(live)
             
-    # Compute new value
-    value = compute_func()
-    cache[action_key] = (current_metadata, value)
-    return value
+            # Clean up temporary state
+            st.session_state.pop(f"{task_id}_live_results", None)
+            
+        if st.session_state[state_index] >= total:
+            st.session_state[state_status] = "completed"
+            
+    elif status == "completed":
+        status_text.text(f"Completed processing {total} requirements.")
+    else:
+        display_status = "Paused" if status == "stopped" else status.title()
+        status_text.text(f"{display_status} at requirement {current_index} of {total}.")
+        
+    return st.session_state[state_results], st.session_state[state_status] == "running"
 
 def render_analysis_tab():
     st.header("INCOSE / ASPICE Automated Audit Tool")
@@ -123,6 +254,20 @@ def render_analysis_tab():
             btn_key = f"btn_{action_id}"
             if col.button(title, key=btn_key, use_container_width=True):
                 st.session_state.last_action = action_id
+                if action_id in ["analyse_swe1", "analyse_swe2", "correct_swe1", "correct_swe2"]:
+                    current_status = st.session_state.get(f"{action_id}_status", "idle")
+                    if current_status in ["idle", "completed"]:
+                        st.session_state[f"{action_id}_status"] = "running"
+                        st.session_state[f"{action_id}_index"] = 0
+                        st.session_state[f"{action_id}_results"] = []
+                        cache_file = os.path.join(os.getcwd(), f".cache_{action_id}.json")
+                        if os.path.exists(cache_file):
+                            try:
+                                os.remove(cache_file)
+                            except Exception:
+                                pass
+                    elif current_status == "stopped":
+                        st.session_state[f"{action_id}_status"] = "running"
             btn_index += 1
 
     # --- EXECUTION RESULTS DISPLAY PANEL ---
@@ -156,153 +301,136 @@ def render_analysis_tab():
             if not swe1_reqs:
                 st.info("No requirements found in the uploaded SWE.1 file.")
             else:
-                def run_audit():
-                    progress_bar = st.progress(0.0)
-                    status_text = st.empty()
-                    df_placeholder = st.empty()
-                    def callback(curr, tot, current_data=None):
-                        progress_bar.progress(curr / tot)
-                        status_text.text(f"Auditing requirement {curr} of {tot}...")
-                        if current_data is not None and len(current_data) > 0:
-                            partial_df = pd.DataFrame(current_data)
-                            df_placeholder.dataframe(partial_df, use_container_width=True, height=400)
-                    try:
-                        res = st.session_state.analyzer.analyze_requirements(swe1_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val)
-                    finally:
-                        progress_bar.empty()
-                        status_text.empty()
-                        df_placeholder.empty()
-                    return res
+                def render_swe1_df(df, placeholder):
+                    placeholder.dataframe(apply_df_styling(df.style, color_status, subset=['Status']), use_container_width=True, height=400)
                     
-                analysis_data = get_cached_result(
-                    ("analyse_swe1", mode_val),
-                    (swe1_files.name, swe1_files.size, tuple(selected_collections_val) if selected_collections_val else None) if swe1_files else None,
-                    run_audit
+                analysis_data, is_running = process_task_with_controls(
+                    "analyse_swe1", 
+                    swe1_reqs, 
+                    st.session_state.analyzer.analyze_requirements,
+                    mode_val, 
+                    selected_collections_val,
+                    render_swe1_df
                 )
-                df = pd.DataFrame(analysis_data)
                 
-                # Compute metrics
-                total = len(df)
-                passed = sum(1 for item in analysis_data if item["Status"] == "Passed")
-                review = total - passed
+                df = pd.DataFrame(analysis_data) if analysis_data else pd.DataFrame()
                 
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Total Requirements Checked", total)
-                m2.metric("Passed Requirements", passed)
-                m3.metric("Review Needed", review)
-                
-                st.dataframe(apply_df_styling(df.style, color_status, subset=['Status']), use_container_width=True, height=400)
+                if not is_running and not df.empty:
+                    total = len(df)
+                    passed = sum(1 for item in analysis_data if item.get("Status") == "Passed")
+                    review = total - passed
+                    
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Requirements Checked", total)
+                    m2.metric("Passed", passed)
+                    m3.metric("Review Needed", review)
+                    
+                    render_swe1_df(df, st.empty())
+                elif not is_running and df.empty:
+                    if st.session_state.get("analyse_swe1_status") == "stopped":
+                        st.info("⏸️ Execution paused. No requirements have completed processing yet. Click 'Resume' to continue.")
+                    
+                if is_running:
+                    st.rerun()
                 
         elif action == "analyse_swe2":
             st.markdown("#### 🔍 Quality Audit: SWE.2 Software Architectural Design")
             if not swe2_reqs:
                 st.info("No requirements found in the uploaded SWE.2 file.")
             else:
-                def run_audit():
-                    progress_bar = st.progress(0.0)
-                    status_text = st.empty()
-                    df_placeholder = st.empty()
-                    def callback(curr, tot, current_data=None):
-                        progress_bar.progress(curr / tot)
-                        status_text.text(f"Auditing requirement {curr} of {tot}...")
-                        if current_data is not None and len(current_data) > 0:
-                            partial_df = pd.DataFrame(current_data)
-                            df_placeholder.dataframe(partial_df, use_container_width=True, height=400)
-                    try:
-                        res = st.session_state.analyzer.analyze_requirements(swe2_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val)
-                    finally:
-                        progress_bar.empty()
-                        status_text.empty()
-                        df_placeholder.empty()
-                    return res
+                def render_swe2_df(df, placeholder):
+                    placeholder.dataframe(apply_df_styling(df.style, color_status, subset=['Status']), use_container_width=True, height=400)
                     
-                analysis_data = get_cached_result(
-                    ("analyse_swe2", mode_val),
-                    (swe2_files.name, swe2_files.size, tuple(selected_collections_val) if selected_collections_val else None) if swe2_files else None,
-                    run_audit
+                analysis_data, is_running = process_task_with_controls(
+                    "analyse_swe2", 
+                    swe2_reqs, 
+                    st.session_state.analyzer.analyze_requirements,
+                    mode_val, 
+                    selected_collections_val,
+                    render_swe2_df
                 )
-                df = pd.DataFrame(analysis_data)
                 
-                total = len(df)
-                passed = sum(1 for item in analysis_data if item["Status"] == "Passed")
-                review = total - passed
+                df = pd.DataFrame(analysis_data) if analysis_data else pd.DataFrame()
                 
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Total Requirements Checked", total)
-                m2.metric("Passed Requirements", passed)
-                m3.metric("Review Needed", review)
-                
-                st.dataframe(apply_df_styling(df.style, color_status, subset=['Status']), use_container_width=True, height=400)
+                if not is_running and not df.empty:
+                    total = len(df)
+                    passed = sum(1 for item in analysis_data if item.get("Status") == "Passed")
+                    review = total - passed
+                    
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Requirements Checked", total)
+                    m2.metric("Passed", passed)
+                    m3.metric("Review Needed", review)
+                    
+                    render_swe2_df(df, st.empty())
+                elif not is_running and df.empty:
+                    if st.session_state.get("analyse_swe2_status") == "stopped":
+                        st.info("⏸️ Execution paused. No requirements have completed processing yet. Click 'Resume' to continue.")
+                    
+                if is_running:
+                    st.rerun()
                 
         elif action == "correct_swe1":
             st.markdown("#### 🛠️ Automated Corrections: SWE.1 Requirements")
             if not swe1_reqs:
                 st.info("No requirements found in the uploaded SWE.1 file.")
             else:
-                def run_correction():
-                    progress_bar = st.progress(0.0)
-                    status_text = st.empty()
-                    df_placeholder = st.empty()
-                    def callback(curr, tot, current_data=None):
-                        progress_bar.progress(curr / tot)
-                        status_text.text(f"Correcting requirement {curr} of {tot}...")
-                        if current_data is not None and len(current_data) > 0:
-                            partial_df = pd.DataFrame(current_data)
-                            df_placeholder.dataframe(partial_df, use_container_width=True, height=400)
-                    try:
-                        res = st.session_state.analyzer.correct_requirements(swe1_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val)
-                    finally:
-                        progress_bar.empty()
-                        status_text.empty()
-                        df_placeholder.empty()
-                    return res
+                def render_correct_swe1_df(df, placeholder):
+                    placeholder.dataframe(df, use_container_width=True, height=400)
                     
-                correction_data = get_cached_result(
-                    ("correct_swe1", mode_val),
-                    (swe1_files.name, swe1_files.size, tuple(selected_collections_val) if selected_collections_val else None) if swe1_files else None,
-                    run_correction
+                correction_data, is_running = process_task_with_controls(
+                    "correct_swe1", 
+                    swe1_reqs, 
+                    st.session_state.analyzer.correct_requirements,
+                    mode_val, 
+                    selected_collections_val,
+                    render_correct_swe1_df
                 )
-                df = pd.DataFrame(correction_data)
-                if not correction_data:
-                    st.success("🎉 All requirements are already compliant! No corrections needed.")
-                else:
-                    st.caption("We have corrected the vague, non-binding, or non-measurable requirements automatically:")
-                    st.dataframe(df, use_container_width=True, height=400)
+                
+                df = pd.DataFrame(correction_data) if correction_data else pd.DataFrame()
+                
+                if not is_running:
+                    if st.session_state.get("correct_swe1_status") == "completed" and df.empty:
+                        st.success("🎉 All requirements are already compliant! No corrections needed.")
+                    elif not df.empty:
+                        st.caption("We have corrected the vague, non-binding, or non-measurable requirements automatically:")
+                        render_correct_swe1_df(df, st.empty())
+                    elif df.empty and st.session_state.get("correct_swe1_status") == "stopped":
+                        st.info("⏸️ Execution paused. No requirements have completed processing yet. Click 'Resume' to continue.")
+                    
+                if is_running:
+                    st.rerun()
                     
         elif action == "correct_swe2":
             st.markdown("#### 🛠️ Automated Corrections: SWE.2 Requirements")
             if not swe2_reqs:
                 st.info("No requirements found in the uploaded SWE.2 file.")
             else:
-                def run_correction():
-                    progress_bar = st.progress(0.0)
-                    status_text = st.empty()
-                    df_placeholder = st.empty()
-                    def callback(curr, tot, current_data=None):
-                        progress_bar.progress(curr / tot)
-                        status_text.text(f"Correcting requirement {curr} of {tot}...")
-                        if current_data is not None and len(current_data) > 0:
-                            partial_df = pd.DataFrame(current_data)
-                            df_placeholder.dataframe(partial_df, use_container_width=True, height=400)
-                    try:
-                        res = st.session_state.analyzer.correct_requirements(swe2_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val)
-                    finally:
-                        progress_bar.empty()
-                        status_text.empty()
-                        df_placeholder.empty()
-                    return res
+                def render_correct_swe2_df(df, placeholder):
+                    placeholder.dataframe(df, use_container_width=True, height=400)
                     
-                correction_data = get_cached_result(
-                    ("correct_swe2", mode_val),
-                    (swe2_files.name, swe2_files.size, tuple(selected_collections_val) if selected_collections_val else None) if swe2_files else None,
-                    run_correction
+                correction_data, is_running = process_task_with_controls(
+                    "correct_swe2", 
+                    swe2_reqs, 
+                    st.session_state.analyzer.correct_requirements,
+                    mode_val, 
+                    selected_collections_val,
+                    render_correct_swe2_df
                 )
-                df = pd.DataFrame(correction_data)
-                if not correction_data:
-                    st.success("🎉 All architectural requirements are already compliant! No corrections needed.")
-                else:
-                    st.caption("We have corrected the vague, non-binding, or non-measurable architectural requirements automatically:")
-                    st.dataframe(df, use_container_width=True, height=400)
+                
+                df = pd.DataFrame(correction_data) if correction_data else pd.DataFrame()
+                
+                if not is_running:
+                    if st.session_state.get("correct_swe2_status") == "completed" and df.empty:
+                        st.success("🎉 All architectural requirements are already compliant! No corrections needed.")
+                    elif not df.empty:
+                        st.caption("We have corrected the vague, non-binding, or non-measurable architectural requirements automatically:")
+                        render_correct_swe2_df(df, st.empty())
+                    elif df.empty and st.session_state.get("correct_swe2_status") == "stopped":
+                        st.info("⏸️ Execution paused. No requirements have completed processing yet. Click 'Resume' to continue.")
+                    
+                if is_running:
+                    st.rerun()
                     
         elif action == "compare_trace":
             st.markdown("#### 🔗 Bidirectional Traceability: SWE.1 (HLD) ↔ SWE.2 (LLD)")
@@ -405,86 +533,88 @@ def render_analysis_tab():
             st.dataframe(apply_df_styling(df.style, color_align, subset=['Status']), use_container_width=True)
 
         # --- EXPORT REPORT DELIVERABLES ---
-        st.markdown("---")
-        st.markdown("### 📥 Export Audit Deliverables")
-        
-        # Convert findings dataframe to CSV
-        csv_buffer = df.to_csv(index=False).encode('utf-8')
-        
-        # Determine the active spec and metadata for the current action
-        if action in ["analyse_swe1", "correct_swe1", "compare_hld"]:
-            active_reqs = swe1_reqs
-            active_files = swe1_files
-            action_suffix = "swe1"
-        elif action in ["analyse_swe2", "correct_swe2", "compare_lld"]:
-            active_reqs = swe2_reqs
-            active_files = swe2_files
-            action_suffix = "swe2"
-        else: # e.g. compare_trace, where we default to swe1
-            active_reqs = swe1_reqs
-            active_files = swe1_files
-            action_suffix = "swe1"
+        if not df.empty:
+            st.markdown("---")
+            st.markdown("### 📥 Export Audit Deliverables")
+            
+            # Convert findings dataframe to CSV
+            csv_buffer = df.to_csv(index=False).encode('utf-8')
+            
+            # Determine the active spec and metadata for the current action
+            if action in ["analyse_swe1", "correct_swe1", "compare_hld"]:
+                active_reqs = swe1_reqs
+                active_files = swe1_files
+                action_suffix = "swe1"
+            elif action in ["analyse_swe2", "correct_swe2", "compare_lld"]:
+                active_reqs = swe2_reqs
+                active_files = swe2_files
+                action_suffix = "swe2"
+            else: # e.g. compare_trace, where we default to swe1
+                active_reqs = swe1_reqs
+                active_files = swe1_files
+                action_suffix = "trace"
+                
+            active_metadata = (active_files.name, active_files.size, tuple(selected_collections_val) if selected_collections_val else None) if active_files else None
+            file_name_label = active_files.name if active_files else "Requirements Specification"
+            
+            def run_export_analysis():
+                progress_bar = st.progress(0.0)
+                status_text = st.empty()
+                def callback(curr, tot, current_data=None):
+                    progress_bar.progress(curr / tot)
+                    status_text.text(f"Generating export audit {curr} of {tot}...")
+                try:
+                    res = st.session_state.analyzer.analyze_requirements(active_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val)
+                finally:
+                    progress_bar.empty()
+                    status_text.empty()
+                return res
 
-        # Prepare Markdown Compliance Report using cached results
-        file_name_label = active_files.name if active_files else "Requirements Specification"
-        active_metadata = (active_files.name, active_files.size, tuple(selected_collections_val) if selected_collections_val else None) if active_files else None
-        
-        def run_export_analysis():
-            progress_bar = st.progress(0.0)
-            status_text = st.empty()
-            def callback(curr, tot):
-                progress_bar.progress(curr / tot)
-                status_text.text(f"Generating export audit {curr} of {tot}...")
-            try:
-                res = st.session_state.analyzer.analyze_requirements(active_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val)
-            finally:
-                progress_bar.empty()
-                status_text.empty()
-            return res
+            def run_export_correction():
+                progress_bar = st.progress(0.0)
+                status_text = st.empty()
+                def callback(curr, tot, current_data=None):
+                    progress_bar.progress(curr / tot)
+                    status_text.text(f"Generating export corrections {curr} of {tot}...")
+                try:
+                    res = st.session_state.analyzer.correct_requirements(active_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val)
+                finally:
+                    progress_bar.empty()
+                    status_text.empty()
+                return res
 
-        def run_export_correction():
-            progress_bar = st.progress(0.0)
-            status_text = st.empty()
-            def callback(curr, tot):
-                progress_bar.progress(curr / tot)
-                status_text.text(f"Generating export corrections {curr} of {tot}...")
-            try:
-                res = st.session_state.analyzer.correct_requirements(active_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val)
-            finally:
-                progress_bar.empty()
-                status_text.empty()
-            return res
-
-        analysis_res = get_cached_result(
-            (f"analyse_{action_suffix}", mode_val),
-            active_metadata,
-            run_export_analysis
-        )
-        
-        correction_res = get_cached_result(
-            (f"correct_{action_suffix}", mode_val),
-            active_metadata,
-            run_export_correction
-        )
-        
-        md_report = st.session_state.analyzer.generate_report(analysis_res, correction_res, file_name_label)
-        
-        dcol1, dcol2 = st.columns(2)
-        with dcol1:
-            st.download_button(
-                label="📥 Download Detailed Findings (.CSV)",
-                data=csv_buffer,
-                file_name=f"{action}_findings.csv",
-                mime="text/csv",
-                key="download_csv_findings",
-                use_container_width=True
+            analysis_res = get_cached_result(
+                (f"analyse_{action_suffix}", mode_val),
+                active_metadata,
+                run_export_analysis
             )
-        with dcol2:
-            st.download_button(
-                label="📥 Download Compliance Report (.MD)",
-                data=md_report.encode('utf-8'),
-                file_name=f"{action}_compliance_report.md",
-                mime="text/markdown",
-                key="download_md_report",
-                use_container_width=True
+            
+            correction_res = get_cached_result(
+                (f"correct_{action_suffix}", mode_val),
+                active_metadata,
+                run_export_correction
             )
+            
+            md_report = st.session_state.analyzer.generate_report(analysis_res, correction_res, file_name_label)
+            
+            dcol1, dcol2 = st.columns(2)
+            with dcol1:
+                st.download_button(
+                    label="📥 Download Detailed Findings (.CSV)",
+                    data=csv_buffer,
+                    file_name=f"{action}_findings.csv",
+                    mime="text/csv",
+                    key="download_csv_findings",
+                    use_container_width=True
+                )
+            with dcol2:
+                st.download_button(
+                    label="📥 Download Compliance Report (.MD)",
+                    data=md_report.encode('utf-8'),
+                    file_name=f"{action}_compliance_report.md",
+                    mime="text/markdown",
+                    key="download_md_report",
+                    use_container_width=True
+                )
+                
+                st.caption(f"Note: Evaluated {len(df)} artifacts from {active_files.name if active_files else 'document'}")

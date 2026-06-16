@@ -1,4 +1,4 @@
-﻿ID,EARS Requirement,ASIL,Fault ID,Detection Time,Reaction Time,Debounce,Recovery,Safe State,DTC,Verification
+﻿ID,Content,ASIL,Fault ID,Detection Time,Reaction Time,Debounce,Recovery,Safe State,DTC,Verification
 SYS_REQ_0001,"WHILE VehSpd is within [0 kph, 250 kph], THE SYSTEM SHALL process the VehSpd value within [50 ms].",ASIL B,N/A,N/A,N/A,N/A,N/A,N/A,N/A,HIL_SignalTest
 SYS_REQ_0002,"IF VehSpd > 250 kph, THEN THE SYSTEM SHALL: - detect F_OOR_HI_VehSpd within [10 ms] - react within [10 ms] - set DTC_101_VSPD_OOR_HI - transition to safe state.",ASIL B,F_OOR_HI_VEHSPD,10 ms,10 ms,3 cycles,valid for 500 ms,"Torque = 0 Nm, LKA OFF, Warning ON",DTC_101_VSPD_OOR_HI,HIL_FaultInjection
 SYS_REQ_0003,"IF VehSpd < 0 kph, THEN THE SYSTEM SHALL: - detect F_OOR_LO_VehSpd within [10 ms] - react within [10 ms] - set DTC_101_VSPD_OOR_LO - transition to safe state.",ASIL B,F_OOR_LO_VEHSPD,10 ms,10 ms,3 cycles,valid for 500 ms,"Torque = 0 Nm, LKA OFF, Warning ON",DTC_101_VSPD_OOR_LO,HIL_FaultInjection

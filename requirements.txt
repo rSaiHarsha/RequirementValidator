@@ -5,3 +5,5 @@ python-dotenv
 numpy
 qdrant-client
 pymupdf
+pdfplumber
+pymupdf4llm

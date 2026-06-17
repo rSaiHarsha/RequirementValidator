@@ -22,6 +22,60 @@ if "messages" not in st.session_state:
 if "last_action" not in st.session_state:
     st.session_state.last_action = None
 
+@st.dialog("📚 Database Chunk Explorer", width="large")
+def view_chunks_dialog(collection_name: str):
+    st.write(f"📂 **Viewing Collection:** `{collection_name}`")
+    
+    with st.spinner("Loading chunks..."):
+        try:
+            col_chunks = st.session_state.rag.get_all_chunks(collection_name, limit=500)
+        except Exception as e:
+            st.error(f"Failed to fetch chunks: {e}")
+            return
+            
+    st.write(f"📊 **Total Chunks Ingested:** `{len(col_chunks)}`")
+    
+    if not col_chunks:
+        st.info("No chunks found in this collection.")
+        return
+        
+    # Group chunks by page or source
+    pages = {}
+    for chunk in col_chunks:
+        payload = chunk.get("payload", {})
+        meta = payload.get("metadata", {})
+        page_num = meta.get("page", "General")
+        if page_num not in pages:
+            pages[page_num] = []
+        pages[page_num].append(chunk)
+    
+    # Display sub-expanders for each page
+    for page_num in sorted(pages.keys(), key=lambda x: (isinstance(x, int), x)):
+        page_label = f"Page {page_num}" if isinstance(page_num, int) else str(page_num)
+        page_chunks = pages[page_num]
+        
+        with st.expander(f"📄 {page_label} ({len(page_chunks)} chunks)", expanded=False):
+            for idx, chunk in enumerate(page_chunks, 1):
+                cid = chunk.get("id", "N/A")
+                payload = chunk.get("payload", {})
+                t = payload.get("title", "Untitled")
+                txt = payload.get("text", "")
+                meta = payload.get("metadata", {})
+                itype = meta.get("item_type", "N/A")
+                iid = meta.get("item_id") or "N/A"
+                
+                st.markdown(f"""
+                <div style="background: rgba(30, 41, 59, 0.45); border: 1px solid rgba(255,255,255,0.08); padding: 12px; border-radius: 8px; margin-bottom: 10px;">
+                    <div style="font-size: 0.78rem; color: #94a3b8; margin-bottom: 6px;">
+                        <strong>Chunk #{idx}</strong> | ID: <code>{cid}</code> | Type: <code>{itype}</code> | Ref: <code>{iid}</code>
+                    </div>
+                    <details style="cursor: pointer;">
+                        <summary style="font-size: 0.95rem; font-weight: 600; color: #60a5fa;">{t}</summary>
+                        <p style="font-size: 0.88rem; margin-top: 8px; margin-bottom: 0; color: #cbd5e1; line-height: 1.5; white-space: pre-wrap;">{txt}</p>
+                    </details>
+                </div>
+                """, unsafe_allow_html=True)
+
 # System Configuration Sidebar
 with st.sidebar:
     st.header("⚙️ Configuration")
@@ -59,27 +113,9 @@ with st.sidebar:
         
         for col in collections:
             with st.expander(f"📁 {col}"):
-                # Get documents for this collection
-                col_docs = [doc for doc in st.session_state.rag.documents if doc.get("collection") == col]
-                if col_docs:
-                    # Try to extract unique sources or names
-                    sources = set()
-                    for doc in col_docs:
-                        src = doc.get("source", "Unknown Source")
-                        # Try to strip block/page info to get the root document name if possible
-                        # e.g. "file.pdf (Block 1)" -> "file.pdf"
-                        if " (Block " in src:
-                            src = src.split(" (Block ")[0]
-                        elif src.startswith("Page "):
-                            # For Qdrant chunks without filenames, we can use title
-                            title = doc.get("title", "Untitled")
-                            src = f"{title} (Page {src.split(' ')[1]})"
-                        sources.add(src)
-                    
-                    for src in sorted(list(sources)):
-                        st.markdown(f"- 📄 {src}")
-                else:
-                    st.caption("No documents locally tracked.")
+                st.markdown(f"Inspect the chunks ingested for **{col}**.")
+                if st.button("🔍 View Chunks", key=f"btn_view_{col}", use_container_width=True):
+                    view_chunks_dialog(col)
     else:
         st.info("No collections found.")
 

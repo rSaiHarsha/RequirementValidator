@@ -2,6 +2,7 @@ import os
 import numpy as np
 import pickle
 import uuid
+import time
 from pathlib import Path
 from dotenv import load_dotenv
 from Model.llm import LLMManager
@@ -46,6 +47,36 @@ class RAGEngine:
                 print(f"[RAGEngine] QdrantClient connected to URL: {qdrant_url}", flush=True)
             except Exception as e:
                 print(f"[RAGEngine] Failed to initialize QdrantClient: {e}", flush=True)
+
+    def _safe_get_embedding(self, text: str, max_retries: int = 5) -> list:
+        """Helper to get an embedding with exponential backoff on rate limits."""
+        for attempt in range(max_retries):
+            try:
+                return self.llm.get_embedding(text)
+            except Exception as e:
+                err_msg = str(e)
+                if "429" in err_msg or "Too Many Requests" in err_msg or "rate limit" in err_msg.lower():
+                    wait_time = 2 ** attempt
+                    print(f"[RAGEngine] Rate limit hit. Retrying get_embedding in {wait_time}s... (Attempt {attempt+1}/{max_retries})", flush=True)
+                    time.sleep(wait_time)
+                else:
+                    raise e
+        raise Exception("Max retries exceeded for embeddings.")
+
+    def _safe_get_embeddings_batch(self, texts: list[str], max_retries: int = 5) -> list:
+        """Helper to get batch embeddings with exponential backoff on rate limits."""
+        for attempt in range(max_retries):
+            try:
+                return self.llm.get_embeddings_batch(texts)
+            except Exception as e:
+                err_msg = str(e)
+                if "429" in err_msg or "Too Many Requests" in err_msg or "rate limit" in err_msg.lower():
+                    wait_time = 2 ** attempt
+                    print(f"[RAGEngine] Rate limit hit. Retrying get_embeddings_batch in {wait_time}s... (Attempt {attempt+1}/{max_retries})", flush=True)
+                    time.sleep(wait_time)
+                else:
+                    raise e
+        raise Exception("Max retries exceeded for batch embeddings.")
 
     def get_collections(self) -> list[str]:
         """List all available collections/knowledge bases."""
@@ -191,13 +222,22 @@ class RAGEngine:
         
         # Batch upload to Qdrant or compute locally
         total = len(self.documents)
-        self.vectors = []
+        self.vectors = [None] * total
         
-        for i, doc in enumerate(self.documents):
-            embedding = self.llm.get_embedding(doc["text"])
-            self.vectors.append(embedding)
-            if progress_callback:
-                progress_callback((i + 1) / total)
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def process_doc(idx, text):
+            return idx, self._safe_get_embedding(text)
+
+        completed = 0
+        with ThreadPoolExecutor(max_workers=24  ) as executor:
+            futures = {executor.submit(process_doc, idx, doc["text"]): idx for idx, doc in enumerate(self.documents)}
+            for future in as_completed(futures):
+                idx, embedding = future.result()
+                self.vectors[idx] = embedding
+                completed += 1
+                if progress_callback:
+                    progress_callback(completed / total)
         
         self._save_local_db()
 
@@ -235,7 +275,7 @@ class RAGEngine:
 
     def ingest_chunk(self, collection_name: str, chunk_id: str, text: str, title: str, metadata: dict):
         """Upsert a single document chunk."""
-        embedding = self.llm.get_embedding(text)
+        embedding = self._safe_get_embedding(text)
 
         if self.qdrant_client:
         
@@ -283,7 +323,7 @@ class RAGEngine:
             return
 
         texts = [c["text"] for c in chunks]
-        embeddings = self.llm.get_embeddings_batch(texts)
+        embeddings = self._safe_get_embeddings_batch(texts)
 
         if self.qdrant_client:
             
@@ -337,7 +377,7 @@ class RAGEngine:
 
         if self.qdrant_client:
             try:
-                query_vector = self.llm.get_embedding(search_text)
+                query_vector = self._safe_get_embedding(search_text)
                 
                 collections_to_search = []
                 if not collection_name or collection_name == "All Collections":
@@ -375,7 +415,7 @@ class RAGEngine:
         if not self.vectors or len(self.vectors) == 0:
             return []
 
-        query_vector = np.array(self.llm.get_embedding(search_text))
+        query_vector = np.array(self._safe_get_embedding(search_text))
         matrix = np.array(self.vectors)
 
         matrix_norms = np.linalg.norm(matrix, axis=1)
@@ -432,4 +472,49 @@ class RAGEngine:
         results = []
         for q in search_texts:
             results.append(self.query(q, collection_name, top_k))
+        return results
+
+    def get_all_chunks(self, collection_name: str, limit: int = 100) -> list[dict]:
+        """Retrieve all chunks from a specific collection using Qdrant's scroll API."""
+        if not collection_name or collection_name == "None":
+            return []
+
+        if self.qdrant_client:
+            try:
+                # Use scroll to get raw points without needing a search query
+                records, next_page_offset = self.qdrant_client.scroll(
+                    collection_name=collection_name,
+                    limit=limit,
+                    with_payload=True,
+                    with_vectors=False  # We only need the text/metadata for UI, not the arrays
+                )
+                
+                results = []
+                for record in records:
+                    results.append({
+                        "id": record.id,
+                        "payload": record.payload,
+                        "collection": collection_name
+                    })
+                return results
+            except Exception as e:
+                print(f"[RAGEngine] Qdrant scroll failed: {e}. Falling back to local.", flush=True)
+
+        # Local Database Fallback
+        results = []
+        count = 0
+        for doc in self.documents:
+            if doc.get("collection") == collection_name:
+                results.append({
+                    "id": doc.get("id"),
+                    "payload": {
+                        "title": doc.get("title", "Untitled"),
+                        "text": doc.get("text", ""),
+                        "metadata": doc.get("metadata", {})
+                    },
+                    "collection": doc.get("collection")
+                })
+                count += 1
+                if count >= limit:
+                    break
         return results

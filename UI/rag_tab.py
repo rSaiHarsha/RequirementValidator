@@ -1,9 +1,12 @@
 import streamlit as st
 import fitz  # pymupdf
+import pymupdf4llm # NEW: Replaces pdfplumber
 import re
 import uuid
 import json
 import time
+import io
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Custom premium styling (Glassmorphism, custom cards, and badges)
 CSS_STYLES = """
@@ -151,20 +154,37 @@ def extract_json_array(llm_output: str, show_error: bool = True) -> list[dict]:
             st.error(f"Failed to parse JSON array from LLM response: {e}")
     return []
 
-def generate_chunks_with_llm(page_text: str, page_num: int) -> list[dict]:
-    """Chunk page text into technical specification entries using the active LLM."""
-    if not page_text.strip():
+# Helper functions convert_table_to_markdown and extract_page_content are deleted since pymupdf4llm handles both natively.
+
+def safe_get_response(active_llm, messages, stream=False, max_retries=5):
+    """Helper to call LLMManager.get_response with exponential backoff on rate limits."""
+    for attempt in range(max_retries):
+        try:
+            return active_llm.get_response(messages, stream=stream)
+        except Exception as e:
+            err_msg = str(e)
+            if "429" in err_msg or "Too Many Requests" in err_msg or "rate limit" in err_msg.lower():
+                wait_time = 2 ** attempt
+                print(f"[UI/rag_tab] Rate limit hit. Retrying get_response in {wait_time}s... (Attempt {attempt+1}/{max_retries})", flush=True)
+                time.sleep(wait_time)
+            else:
+                raise e
+    raise Exception("Max retries exceeded for chat response.")
+
+def generate_chunks_with_llm(page_markdown: str, page_num: int, llm=None) -> list[dict]:
+    """Chunk layout-aware Markdown into technical specification entries."""
+    if not page_markdown.strip():
         return []
 
     system_prompt = (
-        "You are an expert systems engineer and technical writer. Your task is to read a raw text page "
+        "You are an expert systems engineer and technical writer. Your task is to read a Markdown-formatted page "
         "extracted from a technical manual/specification and break it down into one or more high-quality, "
         "standalone text chunks optimized for semantic search and RAG.\n\n"
         "Instructions:\n"
         "1. Identify the logical topics, requirements, rules, configurations, or sections on the page.\n"
         "2. For each identified topic, write a clean, detailed text description containing all technical terms, "
         "codes, and variables. Retain full context so the chunk is self-explanatory.\n"
-        "3. If there are tables, lists, or structured data, format them into clear Markdown tables/lists within the text.\n"
+        "3. Preserve the structure of Markdown tables, lists, or structured data within the text.\n"
         "4. Assign appropriate metadata to each chunk.\n"
         "5. Output the result ONLY as a valid JSON array of objects. Do not include any commentary outside the JSON.\n\n"
         "Each object in the JSON array must follow this exact schema:\n"
@@ -182,7 +202,9 @@ def generate_chunks_with_llm(page_text: str, page_num: int) -> list[dict]:
         "]"
     )
 
-    user_prompt = f"Page Number: {page_num}\n\nRaw Page Text:\n{page_text}"
+    user_prompt = f"Page Number: {page_num}\n\nMarkdown Content:\n{page_markdown}"
+
+    active_llm = llm if llm is not None else st.session_state.llm
 
     try:
         messages = [
@@ -190,13 +212,11 @@ def generate_chunks_with_llm(page_text: str, page_num: int) -> list[dict]:
             {"role": "user", "content": user_prompt}
         ]
         
-        # Use our active LLMManager response builder
-        response = st.session_state.llm.get_response(messages, stream=False)
+        response = safe_get_response(active_llm, messages, stream=False)
         llm_output = response.choices[0].message.content
         chunks = extract_json_array(llm_output, show_error=False)
         
         if not chunks:
-            # First attempt failed to yield valid JSON. Perform retry with self-correction prompt.
             correction_user_prompt = (
                 f"{user_prompt}\n\n"
                 f"--- Previous Attempt Output ---\n{llm_output}\n\n"
@@ -209,7 +229,7 @@ def generate_chunks_with_llm(page_text: str, page_num: int) -> list[dict]:
                 {"role": "user", "content": correction_user_prompt}
             ]
             print(f"[UI/rag_tab] JSON parsing failed. Retrying with self-correction prompt...", flush=True)
-            response_retry = st.session_state.llm.get_response(messages_retry, stream=False)
+            response_retry = safe_get_response(active_llm, messages_retry, stream=False)
             llm_output_retry = response_retry.choices[0].message.content
             chunks = extract_json_array(llm_output_retry, show_error=True)
 
@@ -232,10 +252,9 @@ def generate_chunks_with_llm(page_text: str, page_num: int) -> list[dict]:
     except Exception as e:
         print(f"[UI/rag_tab] LLM chunk generation error: {e}", flush=True)
             
-    # Fallback chunk if LLM fails after retries
     return [{
         "title": f"Page {page_num} Raw Content",
-        "text": page_text,
+        "text": page_markdown,
         "metadata": {
             "item_type": "page_text",
             "item_id": None,
@@ -413,24 +432,49 @@ def render_rag_tab():
                     st.session_state.run_extraction = False
                     st.stop()
                     
-                pages_to_process = list(range(st.session_state.start_page, st.session_state.end_page + 1))
+                # PyMuPDF uses 0-indexed pages
+                pages_0_indexed = list(range(st.session_state.start_page - 1, st.session_state.end_page))
                 progress_bar = st.progress(0.0)
                 status_text = st.empty()
 
-                for idx, page_num in enumerate(pages_to_process):
-                    status_text.text(f"Extracting & chunking Page {page_num} of {st.session_state.end_page}...")
-                    try:
-                        page_text = doc[page_num - 1].get_text("text")
-                        page_chunks = generate_chunks_with_llm(page_text, page_num)
-                        
-                        for chunk in page_chunks:
-                            chunk["id"] = str(uuid.uuid4())
-                            chunk["status"] = "pending"
-                            extracted_list.append(chunk)
-                    except Exception as e:
-                        st.error(f"Error page {page_num}: {e}")
-                    progress_bar.progress((idx + 1) / len(pages_to_process))
-                    time.sleep(0.1)
+                status_text.text("Analyzing layout and extracting Markdown tables...")
+                
+                # Single-pass layout analysis for requested pages
+                try:
+                    # Returns a list of dicts: [{"text": "markdown...", "metadata": {...}}, ...]
+                    md_pages = pymupdf4llm.to_markdown(doc, pages=pages_0_indexed, page_chunks=True)
+                except Exception as e:
+                    st.error(f"Markdown layout extraction failed: {e}")
+                    st.stop()
+
+                completed = 0
+                llm = st.session_state.llm
+
+                def process_page(md_page_dict, actual_page_num):
+                    text = md_page_dict.get("text", "")
+                    chunks = generate_chunks_with_llm(text, actual_page_num, llm=llm)
+                    for chunk in chunks:
+                        chunk["id"] = str(uuid.uuid4())
+                        chunk["status"] = "pending"
+                    return chunks
+
+                MAX_WORKERS = 2
+                with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                    # Map the markdown text dictionary to the actual 1-indexed page number
+                    futures = {
+                        executor.submit(process_page, md_pages[i], pages_0_indexed[i] + 1): pages_0_indexed[i] + 1 
+                        for i in range(len(md_pages))
+                    }
+                    
+                    for future in as_completed(futures):
+                        p = futures[future]
+                        try:
+                            extracted_list.extend(future.result())
+                        except Exception as e:
+                            st.error(f"Error processing page {p}: {e}")
+                        completed += 1
+                        progress_bar.progress(completed / len(pages_0_indexed))
+                        status_text.text(f"Chunked {completed}/{len(pages_0_indexed)} pages via LLM...")
 
                 status_text.text("Extraction completed successfully!")
             else:
@@ -623,3 +667,5 @@ def render_rag_tab():
                             """)
                 except Exception as e:
                     st.error(f"Search verification failed: {e}")
+
+

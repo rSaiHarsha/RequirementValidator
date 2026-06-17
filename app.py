@@ -94,6 +94,14 @@ with st.sidebar:
         st.session_state.llm.retries = llm_retry_limit
     
     st.markdown("---")
+    st.subheader("⚡ Processing Mode")
+    st.session_state.batch_mode_enabled = st.toggle("Batch Processing", value=False)
+    if st.session_state.batch_mode_enabled:
+        st.session_state.batch_size = st.number_input("Batch Size", min_value=1, value=10, step=1)
+    else:
+        st.session_state.batch_size = 5
+
+    st.markdown("---")
     st.subheader("🤖 Active LLM Model")
     st.info(f"**Model:**\n`{st.session_state.llm.model_name}`")
     st.caption("Powered by NVIDIA NIM Core engine.")

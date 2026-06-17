@@ -93,7 +93,7 @@ def process_task_with_controls(task_id, items, process_func, mode_val, selected_
     df_placeholder = st.empty()
 
     if status == "running" and current_index < total:
-        chunk_size = 5 if mode_val == "single" else 10
+        chunk_size = 5 if mode_val == "single" else st.session_state.get("batch_size", 10)
         status_text.text(f"Processing requirement {current_index + 1} of {total}...")
         
         chunk = items[current_index : current_index + chunk_size]
@@ -208,14 +208,8 @@ def render_analysis_tab():
         st.markdown("---")
         st.markdown("### ⚡ V-Cycle Analysis Panel")
         
-        # Select processing mode using premium radio button layout
-        mode_label = st.radio(
-            "⚙️ LLM Processing Mode",
-            ["Single Processing (Parallel)", "Batch Processing (Fast)"],
-            horizontal=True,
-            help="Single processing analyzes requirements concurrently item-by-item. Batch processing groups requirements together to optimize speed and API usage."
-        )
-        mode_val = "batch" if "Batch" in mode_label else "single"
+        # Processing mode is now determined via the sidebar configuration.
+        mode_val = "batch" if st.session_state.get("batch_mode_enabled", False) else "single"
         
         selected_collections_val = st.session_state.get("target_rag_collections", None)
             

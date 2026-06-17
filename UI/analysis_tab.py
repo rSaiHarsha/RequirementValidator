@@ -66,26 +66,14 @@ def process_task_with_controls(task_id, items, process_func, mode_val, selected_
     results = st.session_state[state_results]
     total = len(items)
 
-    col1, col2, col3 = st.columns(3)
+    is_active = status in ["running", "paused"] and current_index < total
+    button_label = "⏸️ Pause" if status == "running" else "▶️ Start"
     
-    start_label = "▶️ Start" if current_index == 0 else "▶️ Resume"
-    if col1.button(start_label, disabled=(status == "running" or current_index >= total), key=f"start_{task_id}"):
-        st.session_state[state_status] = "running"
-        st.rerun()
-        
-    if col2.button("⏸️ Pause", disabled=(status != "running"), key=f"stop_{task_id}"):
-        st.session_state[state_status] = "stopped"
-        st.rerun()
-        
-    if col3.button("🔄 Restart", disabled=(status == "running" and current_index == 0), key=f"restart_{task_id}"):
-        st.session_state[state_status] = "running"
-        st.session_state[state_index] = 0
-        st.session_state[state_results] = []
-        if os.path.exists(cache_file):
-            try:
-                os.remove(cache_file)
-            except Exception:
-                pass
+    if st.button(button_label, disabled=not is_active, key=f"toggle_{task_id}"):
+        if status == "running":
+            st.session_state[state_status] = "paused"
+        else:
+            st.session_state[state_status] = "running"
         st.rerun()
 
     progress_bar = st.progress(current_index / total if total > 0 else 0.0)
@@ -162,7 +150,7 @@ def process_task_with_controls(task_id, items, process_func, mode_val, selected_
     elif status == "completed":
         status_text.text(f"Completed processing {total} requirements.")
     else:
-        display_status = "Paused" if status == "stopped" else status.title()
+        display_status = "Paused" if status == "paused" else status.title()
         status_text.text(f"{display_status} at requirement {current_index} of {total}.")
         
     return st.session_state[state_results], st.session_state[state_status] == "running"
@@ -249,19 +237,15 @@ def render_analysis_tab():
             if col.button(title, key=btn_key, use_container_width=True):
                 st.session_state.last_action = action_id
                 if action_id in ["analyse_swe1", "analyse_swe2", "correct_swe1", "correct_swe2"]:
-                    current_status = st.session_state.get(f"{action_id}_status", "idle")
-                    if current_status in ["idle", "completed"]:
-                        st.session_state[f"{action_id}_status"] = "running"
-                        st.session_state[f"{action_id}_index"] = 0
-                        st.session_state[f"{action_id}_results"] = []
-                        cache_file = os.path.join(os.getcwd(), f".cache_{action_id}.json")
-                        if os.path.exists(cache_file):
-                            try:
-                                os.remove(cache_file)
-                            except Exception:
-                                pass
-                    elif current_status == "stopped":
-                        st.session_state[f"{action_id}_status"] = "running"
+                    st.session_state[f"{action_id}_status"] = "running"
+                    st.session_state[f"{action_id}_index"] = 0
+                    st.session_state[f"{action_id}_results"] = []
+                    cache_file = os.path.join(os.getcwd(), f".cache_{action_id}.json")
+                    if os.path.exists(cache_file):
+                        try:
+                            os.remove(cache_file)
+                        except Exception:
+                            pass
             btn_index += 1
 
     # --- EXECUTION RESULTS DISPLAY PANEL ---
@@ -321,7 +305,7 @@ def render_analysis_tab():
                     
                     render_swe1_df(df, st.empty())
                 elif not is_running and df.empty:
-                    if st.session_state.get("analyse_swe1_status") == "stopped":
+                    if st.session_state.get("analyse_swe1_status") == "paused":
                         st.info("⏸️ Execution paused. No requirements have completed processing yet. Click 'Resume' to continue.")
                     
                 if is_running:
@@ -358,7 +342,7 @@ def render_analysis_tab():
                     
                     render_swe2_df(df, st.empty())
                 elif not is_running and df.empty:
-                    if st.session_state.get("analyse_swe2_status") == "stopped":
+                    if st.session_state.get("analyse_swe2_status") == "paused":
                         st.info("⏸️ Execution paused. No requirements have completed processing yet. Click 'Resume' to continue.")
                     
                 if is_running:
@@ -389,7 +373,7 @@ def render_analysis_tab():
                     elif not df.empty:
                         st.caption("We have corrected the vague, non-binding, or non-measurable requirements automatically:")
                         render_correct_swe1_df(df, st.empty())
-                    elif df.empty and st.session_state.get("correct_swe1_status") == "stopped":
+                    elif df.empty and st.session_state.get("correct_swe1_status") == "paused":
                         st.info("⏸️ Execution paused. No requirements have completed processing yet. Click 'Resume' to continue.")
                     
                 if is_running:
@@ -420,7 +404,7 @@ def render_analysis_tab():
                     elif not df.empty:
                         st.caption("We have corrected the vague, non-binding, or non-measurable architectural requirements automatically:")
                         render_correct_swe2_df(df, st.empty())
-                    elif df.empty and st.session_state.get("correct_swe2_status") == "stopped":
+                    elif df.empty and st.session_state.get("correct_swe2_status") == "paused":
                         st.info("⏸️ Execution paused. No requirements have completed processing yet. Click 'Resume' to continue.")
                     
                 if is_running:

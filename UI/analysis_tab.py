@@ -80,6 +80,14 @@ def process_task_with_controls(task_id, items, process_func, mode_val, selected_
     status_text = st.empty()
     df_placeholder = st.empty()
 
+    if len(results) > 0:
+        df_partial = pd.DataFrame(results)
+        if not df_partial.empty:
+            if render_df_func:
+                render_df_func(df_partial, df_placeholder)
+            else:
+                df_placeholder.dataframe(df_partial, use_container_width=True, height=400)
+
     if status == "running" and current_index < total:
         chunk_size = 5 if mode_val == "single" else st.session_state.get("batch_size", 10)
         status_text.text(f"Processing requirement {current_index + 1} of {total}...")
@@ -237,15 +245,19 @@ def render_analysis_tab():
             if col.button(title, key=btn_key, use_container_width=True):
                 st.session_state.last_action = action_id
                 if action_id in ["analyse_swe1", "analyse_swe2", "correct_swe1", "correct_swe2"]:
-                    st.session_state[f"{action_id}_status"] = "running"
-                    st.session_state[f"{action_id}_index"] = 0
-                    st.session_state[f"{action_id}_results"] = []
-                    cache_file = os.path.join(os.getcwd(), f".cache_{action_id}.json")
-                    if os.path.exists(cache_file):
-                        try:
-                            os.remove(cache_file)
-                        except Exception:
-                            pass
+                    current_status = st.session_state.get(f"{action_id}_status", "idle")
+                    if current_status in ["idle", "completed"]:
+                        st.session_state[f"{action_id}_status"] = "running"
+                        st.session_state[f"{action_id}_index"] = 0
+                        st.session_state[f"{action_id}_results"] = []
+                        cache_file = os.path.join(os.getcwd(), f".cache_{action_id}.json")
+                        if os.path.exists(cache_file):
+                            try:
+                                os.remove(cache_file)
+                            except Exception:
+                                pass
+                    elif current_status == "paused":
+                        st.session_state[f"{action_id}_status"] = "running"
             btn_index += 1
 
     # --- EXECUTION RESULTS DISPLAY PANEL ---
@@ -302,8 +314,6 @@ def render_analysis_tab():
                     m1.metric("Requirements Checked", total)
                     m2.metric("Passed", passed)
                     m3.metric("Review Needed", review)
-                    
-                    render_swe1_df(df, st.empty())
                 elif not is_running and df.empty:
                     if st.session_state.get("analyse_swe1_status") == "paused":
                         st.info("⏸️ Execution paused. No requirements have completed processing yet. Click 'Resume' to continue.")
@@ -339,8 +349,6 @@ def render_analysis_tab():
                     m1.metric("Requirements Checked", total)
                     m2.metric("Passed", passed)
                     m3.metric("Review Needed", review)
-                    
-                    render_swe2_df(df, st.empty())
                 elif not is_running and df.empty:
                     if st.session_state.get("analyse_swe2_status") == "paused":
                         st.info("⏸️ Execution paused. No requirements have completed processing yet. Click 'Resume' to continue.")
@@ -372,7 +380,6 @@ def render_analysis_tab():
                         st.success("🎉 All requirements are already compliant! No corrections needed.")
                     elif not df.empty:
                         st.caption("We have corrected the vague, non-binding, or non-measurable requirements automatically:")
-                        render_correct_swe1_df(df, st.empty())
                     elif df.empty and st.session_state.get("correct_swe1_status") == "paused":
                         st.info("⏸️ Execution paused. No requirements have completed processing yet. Click 'Resume' to continue.")
                     
@@ -403,7 +410,6 @@ def render_analysis_tab():
                         st.success("🎉 All architectural requirements are already compliant! No corrections needed.")
                     elif not df.empty:
                         st.caption("We have corrected the vague, non-binding, or non-measurable architectural requirements automatically:")
-                        render_correct_swe2_df(df, st.empty())
                     elif df.empty and st.session_state.get("correct_swe2_status") == "paused":
                         st.info("⏸️ Execution paused. No requirements have completed processing yet. Click 'Resume' to continue.")
                     

@@ -112,7 +112,7 @@ def process_task_with_controls(task_id, items, process_func, mode_val, selected_
                         else:
                             df_placeholder.dataframe(df_partial, use_container_width=True, height=400)
                             
-            chunk_res = process_func(chunk, progress_callback=chunk_callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val)
+            chunk_res = process_func(chunk, progress_callback=chunk_callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val, batch_size=chunk_size)
         
         finally:
             if chunk_res is not None:
@@ -542,7 +542,7 @@ def render_analysis_tab():
                     progress_bar.progress(curr / tot)
                     status_text.text(f"Generating export audit {curr} of {tot}...")
                 try:
-                    res = st.session_state.analyzer.analyze_requirements(active_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val)
+                    res = st.session_state.analyzer.analyze_requirements(active_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val, batch_size=st.session_state.get("batch_size", 10))
                 finally:
                     progress_bar.empty()
                     status_text.empty()
@@ -555,7 +555,7 @@ def render_analysis_tab():
                     progress_bar.progress(curr / tot)
                     status_text.text(f"Generating export corrections {curr} of {tot}...")
                 try:
-                    res = st.session_state.analyzer.correct_requirements(active_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val)
+                    res = st.session_state.analyzer.correct_requirements(active_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val, batch_size=st.session_state.get("batch_size", 10))
                 finally:
                     progress_bar.empty()
                     status_text.empty()

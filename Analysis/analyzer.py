@@ -15,11 +15,11 @@ class RequirementAnalyzer:
 
     # --- REFACTORED DELEGATE METHODS ---
 
-    def analyze_requirements(self, requirements: List[Requirement], progress_callback=None, rag=None, mode="single", selected_collections=None) -> List[Dict[str, Any]]:
-        return analyze_requirements(requirements, self.llm, progress_callback, rag, mode, selected_collections)
+    def analyze_requirements(self, requirements: List[Requirement], progress_callback=None, rag=None, mode="single", selected_collections=None, batch_size=10) -> List[Dict[str, Any]]:
+        return analyze_requirements(requirements, self.llm, progress_callback, rag, mode, selected_collections, batch_size)
 
-    def correct_requirements(self, requirements: List[Requirement], progress_callback=None, rag=None, mode="single", selected_collections=None) -> List[Dict[str, Any]]:
-        return correct_requirements(requirements, self.llm, progress_callback, rag, mode, selected_collections)
+    def correct_requirements(self, requirements: List[Requirement], progress_callback=None, rag=None, mode="single", selected_collections=None, batch_size=10) -> List[Dict[str, Any]]:
+        return correct_requirements(requirements, self.llm, progress_callback, rag, mode, selected_collections, batch_size)
 
     def compare_traceability(self, swe1_reqs: List[Requirement], swe2_reqs: List[Requirement]) -> Dict[str, Any]:
         return compare_traceability(swe1_reqs, swe2_reqs)

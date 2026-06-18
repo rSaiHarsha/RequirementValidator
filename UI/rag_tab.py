@@ -131,7 +131,7 @@ CSS_STYLES = """
 """
 
 def extract_json_array(llm_output: str, show_error: bool = True) -> list[dict]:
-    """Extract and parse a JSON array from the raw LLM output."""
+    """Extract and parse a JSON array from the raw LLM output, with fallbacks for common syntax issues."""
     match = re.search(r'```(?:json)?\s*(.*?)\s*```', llm_output, re.DOTALL)
     if match:
         json_str = match.group(1).strip()
@@ -144,15 +144,106 @@ def extract_json_array(llm_output: str, show_error: bool = True) -> list[dict]:
         json_str = json_str[start_idx:end_idx+1]
         
     try:
+        # Fallback 1: Direct JSON parsing
         data = json.loads(json_str, strict=False)
         if isinstance(data, list):
             return data
         elif isinstance(data, dict):
             return [data]
-    except Exception as e:
+    except Exception as e1:
+        # Fallback 2: Try stripping trailing commas which often fail standard JSON parsers
+        try:
+            cleaned_str = re.sub(r',\s*([\]}])', r'\1', json_str)
+            data = json.loads(cleaned_str, strict=False)
+            if isinstance(data, list):
+                return data
+            elif isinstance(data, dict):
+                return [data]
+        except Exception:
+            pass
+
+        # Fallback 3: Try ast.literal_eval for Python literal syntax (e.g., single-quoted strings)
+        try:
+            import ast
+            data = ast.literal_eval(json_str)
+            if isinstance(data, list):
+                return data
+            elif isinstance(data, dict):
+                return [data]
+        except Exception:
+            pass
+
         if show_error:
-            st.error(f"Failed to parse JSON array from LLM response: {e}")
+            st.error(f"Failed to parse JSON array from LLM response: {e1}")
     return []
+
+
+def render_single_chunk_card(chunk, idx, is_live=False):
+    meta = chunk.get("metadata", {})
+    title = chunk.get("title", "Untitled")
+    text = chunk.get("text", "")
+    item_type = meta.get("item_type", "N/A")
+    item_id = meta.get("item_id") or "N/A"
+    page = meta.get("page", 1)
+    keywords = meta.get("keywords", [])
+    status = chunk.get("status", "pending")
+    
+    status_label = "Pending"
+    if status == "ingested":
+        status_label = "Ingested"
+    elif status == "error":
+        status_label = "Error"
+        
+    safe_text = text.replace("<", "&lt;").replace(">", "&gt;")
+    safe_title = title.replace("<", "&lt;").replace(">", "&gt;")
+    safe_item_id = item_id.replace("<", "&lt;").replace(">", "&gt;")
+    
+    tags_html = "".join([f'<span class="keyword-tag">{kw}</span>' for kw in keywords])
+    
+    card_html = f"""
+    <div class="chunk-card">
+        <div class="chunk-header">
+            <span class="chunk-badge {status}">{status_label}</span>
+            <span class="chunk-badge page">Page {page}</span>
+            <span class="chunk-badge type">{item_type}</span>
+            <span class="chunk-badge page">ID: {safe_item_id}</span>
+        </div>
+        <div class="chunk-body">
+            <strong style="font-size:1.05rem; color:#f1f5f9;">{safe_title}</strong>
+            <p style="margin-top:8px; margin-bottom:8px;">{safe_text}</p>
+        </div>
+        <div class="tag-container">
+            {tags_html}
+        </div>
+    </div>
+    """
+    st.markdown(card_html, unsafe_allow_html=True)
+    
+    col_btn, col_info = st.columns([1, 4])
+    with col_btn:
+        if status == "pending":
+            if is_live:
+                st.markdown("<span style='color:#fbbf24; font-weight:600; padding:6px 0; display:inline-block;'>⏳ Ingestion pending</span>", unsafe_allow_html=True)
+            else:
+                if st.button(f"📥 Ingest Chunk {idx+1}", key=f"ingest_indiv_{chunk['id']}", use_container_width=True):
+                    try:
+                        st.session_state.rag.ingest_chunk(
+                            collection_name=st.session_state.target_collection_name,
+                            chunk_id=chunk["id"],
+                            text=text,
+                            title=title,
+                            metadata=meta
+                        )
+                        chunk["status"] = "ingested"
+                        st.success(f"Ingested Chunk {idx+1}!")
+                        st.rerun()
+                    except Exception as e:
+                        chunk["status"] = "error"
+                        st.error(f"Failed to ingest: {e}")
+        elif status == "ingested":
+            st.markdown("<span style='color:#34d399; font-weight:600; padding:6px 0; display:inline-block;'>✓ Added to collection</span>", unsafe_allow_html=True)
+        else:
+            st.markdown("<span style='color:#f87171; font-weight:600; padding:6px 0; display:inline-block;'>✗ Ingestion error</span>", unsafe_allow_html=True)
 
 # Helper functions convert_table_to_markdown and extract_page_content are deleted since pymupdf4llm handles both natively.
 
@@ -184,9 +275,11 @@ def generate_chunks_with_llm(page_markdown: str, page_num: int, llm=None) -> lis
         "1. Identify the logical topics, requirements, rules, configurations, or sections on the page.\n"
         "2. For each identified topic, write a clean, detailed text description containing all technical terms, "
         "codes, and variables. Retain full context so the chunk is self-explanatory.\n"
-        "3. Preserve the structure of Markdown tables, lists, or structured data within the text.\n"
-        "4. Assign appropriate metadata to each chunk.\n"
-        "5. Output the result ONLY as a valid JSON array of objects. Do not include any commentary outside the JSON.\n\n"
+        "3. CRITICAL TABLE RULE: If you encounter a large Markdown table (like a Capability Level matrix), DO NOT output the entire table as a single chunk. and "
+        "Instead, create a separate JSON chunk for each row or logical group of rows the chunks should be retrievable during similarity search, hence Explicitly state the context  in the text of each chunk.\n"
+        "4. Preserve the structure of Markdown tables, lists, or structured data within the text.\n"
+        "5. Assign appropriate metadata to each chunk.\n"
+        "6. Output the result ONLY as a valid JSON array of objects. Do not include any commentary outside the JSON.\n\n"
         "Each object in the JSON array must follow this exact schema:\n"
         "[\n"
         "  {\n"
@@ -217,21 +310,32 @@ def generate_chunks_with_llm(page_markdown: str, page_num: int, llm=None) -> lis
         chunks = extract_json_array(llm_output, show_error=False)
         
         if not chunks:
-            correction_user_prompt = (
-                f"{user_prompt}\n\n"
-                f"--- Previous Attempt Output ---\n{llm_output}\n\n"
-                "CRITICAL: The output above could not be parsed as valid JSON. "
-                "Please rewrite and return ONLY a valid JSON array matching the requested schema. "
+            # Optimize prompt sizes to strictly fit within the 512 input token limit.
+            # Avoid sending the original markdown user_prompt again; the model only needs to fix the JSON syntax of its output.
+            retry_system_prompt = (
+                "You are an expert JSON repair assistant. Fix the JSON syntax of the input and return ONLY a valid JSON array "
+                "conforming to the schema: each object has 'title', 'text', and 'metadata' (with 'item_type', 'item_id', 'item_name', 'keywords'). "
                 "Do not include any introductory or concluding text outside the JSON block."
             )
+            # Truncate llm_output if it's exceptionally long to protect the token budget
+            max_failed_chars = 1200
+            truncated_output = llm_output if len(llm_output) <= max_failed_chars else llm_output[:max_failed_chars] + "... [truncated]"
+            correction_user_prompt = (
+                f"--- Incorrect JSON Attempt ---\n{truncated_output}\n\n"
+                "CRITICAL: The JSON syntax above is invalid. Please rewrite it as a clean, valid JSON array conforming to the schema. "
+                "Ensure all quotes, brackets, and commas are correct."
+            )
             messages_retry = [
-                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": retry_system_prompt},
                 {"role": "user", "content": correction_user_prompt}
             ]
             print(f"[UI/rag_tab] JSON parsing failed. Retrying with self-correction prompt...", flush=True)
-            response_retry = safe_get_response(active_llm, messages_retry, stream=False)
-            llm_output_retry = response_retry.choices[0].message.content
-            chunks = extract_json_array(llm_output_retry, show_error=True)
+            try:
+                response_retry = safe_get_response(active_llm, messages_retry, stream=False)
+                llm_output_retry = response_retry.choices[0].message.content
+                chunks = extract_json_array(llm_output_retry, show_error=True)
+            except Exception as retry_err:
+                print(f"[UI/rag_tab] Self-correction API call failed: {retry_err}", flush=True)
 
         if chunks:
             for c in chunks:
@@ -398,7 +502,11 @@ def render_rag_tab():
 
         # Trigger dialog configuration if not completed
         if not st.session_state.dialog_completed:
-            configure_target_collection_dialog(uploaded_file)
+            # Auto-open the dialog only when the file is newly uploaded
+            if st.session_state.get("last_uploaded_file") != uploaded_file.name:
+                st.session_state.last_uploaded_file = uploaded_file.name
+                configure_target_collection_dialog(uploaded_file)
+                
             st.warning("⚠️ Action Required: Configure collection settings and parameters inside the dialog.")
             if st.button("Open Settings Dialog", key="reopen_dlg_btn"):
                 configure_target_collection_dialog(uploaded_file)
@@ -418,8 +526,10 @@ def render_rag_tab():
             else:
                 st.session_state.rag.setup_collection(target_collection, recreate=False)
 
+            if st.session_state.extracted_chunks is None:
+                st.session_state.extracted_chunks = []
+
             is_pdf = uploaded_file.name.lower().endswith(".pdf")
-            extracted_list = []
 
             if is_pdf:
                 # PDF workflow
@@ -458,6 +568,9 @@ def render_rag_tab():
                         chunk["status"] = "pending"
                     return chunks
 
+                st.markdown("### 📥 Live Chunk Ingestion Preview")
+                live_preview_container = st.container()
+
                 MAX_WORKERS = 2
                 with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                     # Map the markdown text dictionary to the actual 1-indexed page number
@@ -469,14 +582,34 @@ def render_rag_tab():
                     for future in as_completed(futures):
                         p = futures[future]
                         try:
-                            extracted_list.extend(future.result())
+                            page_chunks = future.result()
+                            for chunk in page_chunks:
+                                split_chunks = st.session_state.rag._split_oversized_chunk(chunk)
+                                for c in split_chunks:
+                                    try:
+                                        st.session_state.rag.ingest_chunk(
+                                            collection_name=target_collection,
+                                            chunk_id=c["id"],
+                                            text=c["text"],
+                                            title=c.get("title", "Untitled"),
+                                            metadata=c.get("metadata", {})
+                                        )
+                                        c["status"] = "ingested"
+                                    except Exception as e:
+                                        c["status"] = "error"
+                                        st.error(f"❌ Failed to ingest chunk ({c.get('title', 'Untitled')}): {e}")
+                                    
+                                    st.session_state.extracted_chunks.append(c)
+                                    with live_preview_container:
+                                        render_single_chunk_card(c, len(st.session_state.extracted_chunks) - 1, is_live=True)
+                                        st.markdown("<br>", unsafe_allow_html=True)
                         except Exception as e:
                             st.error(f"Error processing page {p}: {e}")
                         completed += 1
                         progress_bar.progress(completed / len(pages_0_indexed))
-                        status_text.text(f"Chunked {completed}/{len(pages_0_indexed)} pages via LLM...")
+                        status_text.text(f"Chunked and Ingested {completed}/{len(pages_0_indexed)} pages...")
 
-                status_text.text("Extraction completed successfully!")
+                status_text.text("Extraction & Ingestion completed successfully!")
             else:
                 # Text files workflow
                 try:
@@ -494,23 +627,54 @@ def render_rag_tab():
                 temp_engine.documents = []
                 temp_engine.process_file(uploaded_file.name, file_bytes, target_collection)
                 
-                for doc in temp_engine.documents:
-                    extracted_list.append({
+                st.markdown("### 📥 Live Chunk Ingestion Preview")
+                live_preview_container = st.container()
+                
+                progress_bar = st.progress(0.0)
+                status_text = st.empty()
+                total_docs = len(temp_engine.documents)
+                
+                for idx, doc in enumerate(temp_engine.documents):
+                    chunk = {
                         "id": doc["id"],
                         "title": doc["title"],
                         "text": doc["text"],
                         "status": "pending",
                         "metadata": doc["metadata"]
-                    })
+                    }
+                    
+                    split_chunks = st.session_state.rag._split_oversized_chunk(chunk)
+                    for c in split_chunks:
+                        try:
+                            st.session_state.rag.ingest_chunk(
+                                collection_name=target_collection,
+                                chunk_id=c["id"],
+                                text=c["text"],
+                                title=c.get("title", "Untitled"),
+                                metadata=c.get("metadata", {})
+                            )
+                            c["status"] = "ingested"
+                        except Exception as e:
+                            c["status"] = "error"
+                            st.error(f"❌ Failed to ingest chunk ({c.get('title', 'Untitled')}): {e}")
+                        
+                        st.session_state.extracted_chunks.append(c)
+                        with live_preview_container:
+                            render_single_chunk_card(c, len(st.session_state.extracted_chunks) - 1, is_live=True)
+                            st.markdown("<br>", unsafe_allow_html=True)
+                    
+                    progress_bar.progress((idx + 1) / total_docs)
+                    status_text.text(f"Processed and Ingested chunk {idx+1}/{total_docs}...")
+                
                 # Restore engine documents
                 temp_engine.documents = old_docs
+                status_text.text("Extraction & Ingestion completed successfully!")
 
-            st.session_state.extracted_chunks = extracted_list
             st.session_state.run_extraction = False
             st.rerun()
 
     # Extracted Chunks Preview
-    if st.session_state.extracted_chunks is not None:
+    if st.session_state.extracted_chunks is not None and not st.session_state.get("run_extraction", False):
         st.markdown("---")
         st.markdown("### 📝 Extracted Chunks Preview")
         st.write(f"**Target Collection:** `{st.session_state.target_collection_name}`")
@@ -562,69 +726,7 @@ def render_rag_tab():
         # Expander for individual chunks
         with st.expander("Chunks Created", expanded=True):
             for idx, chunk in enumerate(chunks):
-                meta = chunk.get("metadata", {})
-                title = chunk.get("title", "Untitled")
-                text = chunk.get("text", "")
-                item_type = meta.get("item_type", "N/A")
-                item_id = meta.get("item_id") or "N/A"
-                page = meta.get("page", 1)
-                keywords = meta.get("keywords", [])
-                status = chunk.get("status", "pending")
-                
-                status_label = "Pending"
-                if status == "ingested":
-                    status_label = "Ingested"
-                elif status == "error":
-                    status_label = "Error"
-                    
-                safe_text = text.replace("<", "&lt;").replace(">", "&gt;")
-                safe_title = title.replace("<", "&lt;").replace(">", "&gt;")
-                safe_item_id = item_id.replace("<", "&lt;").replace(">", "&gt;")
-                
-                tags_html = "".join([f'<span class="keyword-tag">{kw}</span>' for kw in keywords])
-                
-                card_html = f"""
-                <div class="chunk-card">
-                    <div class="chunk-header">
-                        <span class="chunk-badge {status}">{status_label}</span>
-                        <span class="chunk-badge page">Page {page}</span>
-                        <span class="chunk-badge type">{item_type}</span>
-                        <span class="chunk-badge page">ID: {safe_item_id}</span>
-                    </div>
-                    <div class="chunk-body">
-                        <strong style="font-size:1.05rem; color:#f1f5f9;">{safe_title}</strong>
-                        <p style="margin-top:8px; margin-bottom:8px;">{safe_text}</p>
-                    </div>
-                    <div class="tag-container">
-                        {tags_html}
-                    </div>
-                </div>
-                """
-                st.markdown(card_html, unsafe_allow_html=True)
-                
-                col_btn, col_info = st.columns([1, 4])
-                with col_btn:
-                    if status == "pending":
-                        if st.button(f"📥 Ingest Chunk {idx+1}", key=f"ingest_indiv_{chunk['id']}", use_container_width=True):
-                            try:
-                                st.session_state.rag.ingest_chunk(
-                                    collection_name=st.session_state.target_collection_name,
-                                    chunk_id=chunk["id"],
-                                    text=text,
-                                    title=title,
-                                    metadata=meta
-                                )
-                                chunk["status"] = "ingested"
-                                st.success(f"Ingested Chunk {idx+1}!")
-                                st.rerun()
-                            except Exception as e:
-                                chunk["status"] = "error"
-                                st.error(f"Failed to ingest: {e}")
-                    elif status == "ingested":
-                        st.markdown("<span style='color:#34d399; font-weight:600; padding:6px 0; display:inline-block;'>✓ Added to collection</span>", unsafe_allow_html=True)
-                    else:
-                        st.markdown("<span style='color:#f87171; font-weight:600; padding:6px 0; display:inline-block;'>✗ Ingestion error</span>", unsafe_allow_html=True)
-                
+                render_single_chunk_card(chunk, idx, is_live=False)
                 st.markdown("<br>", unsafe_allow_html=True)
 
     # Verification Tool

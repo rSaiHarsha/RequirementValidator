@@ -3,6 +3,7 @@ import numpy as np
 import pickle
 import uuid
 import time
+import textwrap
 from pathlib import Path
 from dotenv import load_dotenv
 from Model.llm import LLMManager
@@ -43,7 +44,7 @@ class RAGEngine:
         if qdrant_url:
             try:
                 from qdrant_client import QdrantClient
-                self.qdrant_client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
+                self.qdrant_client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key, timeout=60)
                 print(f"[RAGEngine] QdrantClient connected to URL: {qdrant_url}", flush=True)
             except Exception as e:
                 print(f"[RAGEngine] Failed to initialize QdrantClient: {e}", flush=True)
@@ -77,6 +78,39 @@ class RAGEngine:
                 else:
                     raise e
         raise Exception("Max retries exceeded for batch embeddings.")
+
+    def _split_oversized_chunk(self, chunk: dict, max_chars: int = 1600) -> list[dict]:
+        """Splits a single chunk into multiple smaller chunks if it exceeds max_chars."""
+        text = chunk.get("text", "")
+        if len(text) <= max_chars:
+            return [chunk]
+        
+        sub_chunks = []
+        # Wrap text cleanly without cutting words in half
+        text_pieces = textwrap.wrap(text, width=max_chars, break_long_words=False)
+        
+        for i, piece in enumerate(text_pieces):
+            # Deep copy to prevent mutating the original metadata across iterations
+            import copy
+            new_chunk = copy.deepcopy(chunk)
+            
+            # FIXED: Generate a brand new, valid UUID for Qdrant
+            new_chunk["id"] = str(uuid.uuid4())
+            new_chunk["text"] = piece
+            
+            # Store the original ID and part number in metadata for your reference
+            if "metadata" not in new_chunk:
+                new_chunk["metadata"] = {}
+            new_chunk["metadata"]["parent_chunk_id"] = chunk.get("id")
+            new_chunk["metadata"]["chunk_part"] = i + 1
+            
+            # Add a part identifier to the title for clarity
+            original_title = new_chunk.get("title", "Untitled")
+            new_chunk["title"] = f"{original_title} (Part {i+1})"
+            
+            sub_chunks.append(new_chunk)
+            
+        return sub_chunks
 
     def get_collections(self) -> list[str]:
         """List all available collections/knowledge bases."""
@@ -230,7 +264,7 @@ class RAGEngine:
             return idx, self._safe_get_embedding(text)
 
         completed = 0
-        with ThreadPoolExecutor(max_workers=24  ) as executor:
+        with ThreadPoolExecutor(max_workers=2  ) as executor:
             futures = {executor.submit(process_doc, idx, doc["text"]): idx for idx, doc in enumerate(self.documents)}
             for future in as_completed(futures):
                 idx, embedding = future.result()
@@ -274,59 +308,79 @@ class RAGEngine:
             print(f"[RAGEngine] Failed to save local db: {e}", flush=True)
 
     def ingest_chunk(self, collection_name: str, chunk_id: str, text: str, title: str, metadata: dict):
-        """Upsert a single document chunk."""
-        embedding = self._safe_get_embedding(text)
-
-        if self.qdrant_client:
-        
-            try:
-                point = PointStruct(
-                    id=chunk_id,
-                    vector=embedding,
-                    payload={
-                        "title": title,
-                        "text": text,
-                        "metadata": metadata
-                    }
-                )
-                self.qdrant_client.upsert(collection_name=collection_name, points=[point])
-            except Exception as e:
-                print(f"[RAGEngine] Qdrant ingest failed: {e}. Ingesting locally.", flush=True)
-
-        # Always ingest locally for backup & fallback
-        existing_idx = None
-        for idx, doc in enumerate(self.documents):
-            if doc.get("id") == chunk_id:
-                existing_idx = idx
-                break
-
-        doc_data = {
+        """Upsert a single document chunk (handles oversized chunks automatically)."""
+        # Package into a temporary dictionary to use our splitter
+        temp_chunk = {
             "id": chunk_id,
-            "title": title,
             "text": text,
-            "source": f"Page {metadata.get('page', 'N/A')}",
-            "collection": collection_name,
+            "title": title,
             "metadata": metadata
         }
+        
+        # Sub-divide if necessary (returns a list of 1 or more chunks)
+        processed_chunks = self._split_oversized_chunk(temp_chunk)
 
-        if existing_idx is not None:
-            self.documents[existing_idx] = doc_data
-            self.vectors[existing_idx] = embedding
-        else:
-            self.documents.append(doc_data)
-            self.vectors.append(embedding)
+        for p_chunk in processed_chunks:
+            p_id = p_chunk["id"]
+            p_text = p_chunk["text"]
+            p_title = p_chunk["title"]
+            
+            embedding = self._safe_get_embedding(p_text)
+
+            if self.qdrant_client:
+                try:
+                    point = PointStruct(
+                        id=p_id,
+                        vector=embedding,
+                        payload={
+                            "title": p_title,
+                            "text": p_text,
+                            "metadata": p_chunk["metadata"]
+                        }
+                    )
+                    self.qdrant_client.upsert(collection_name=collection_name, points=[point])
+                except Exception as e:
+                    print(f"[RAGEngine] Qdrant ingest failed: {e}. Ingesting locally.", flush=True)
+
+            # Always ingest locally for backup & fallback
+            existing_idx = None
+            for idx, doc in enumerate(self.documents):
+                if doc.get("id") == p_id:
+                    existing_idx = idx
+                    break
+
+            doc_data = {
+                "id": p_id,
+                "title": p_title,
+                "text": p_text,
+                "source": f"Page {p_chunk['metadata'].get('page', 'N/A')}",
+                "collection": collection_name,
+                "metadata": p_chunk["metadata"]
+            }
+
+            if existing_idx is not None:
+                self.documents[existing_idx] = doc_data
+                self.vectors[existing_idx] = embedding
+            else:
+                self.documents.append(doc_data)
+                self.vectors.append(embedding)
+                
         self._save_local_db()
 
     def ingest_chunks_batch(self, collection_name: str, chunks: list):
-        """Batch upsert multiple document chunks."""
+        """Batch upsert multiple document chunks (handles oversized chunks automatically)."""
         if not chunks:
             return
 
-        texts = [c["text"] for c in chunks]
+        # Flatten and split any oversized chunks before processing
+        processed_chunks = []
+        for chunk in chunks:
+            processed_chunks.extend(self._split_oversized_chunk(chunk))
+
+        texts = [c["text"] for c in processed_chunks]
         embeddings = self._safe_get_embeddings_batch(texts)
 
         if self.qdrant_client:
-            
             try:
                 points = [
                     PointStruct(
@@ -338,14 +392,14 @@ class RAGEngine:
                             "metadata": chunk.get("metadata", {})
                         }
                     )
-                    for chunk, emb in zip(chunks, embeddings)
+                    for chunk, emb in zip(processed_chunks, embeddings)
                 ]
                 self.qdrant_client.upsert(collection_name=collection_name, points=points)
             except Exception as e:
                 print(f"[RAGEngine] Qdrant batch ingest failed: {e}. Ingesting locally.", flush=True)
 
         # Always save locally
-        for chunk, emb in zip(chunks, embeddings):
+        for chunk, emb in zip(processed_chunks, embeddings):
             chunk_id = chunk["id"]
             existing_idx = None
             for idx, doc in enumerate(self.documents):
@@ -368,6 +422,7 @@ class RAGEngine:
             else:
                 self.documents.append(doc_data)
                 self.vectors.append(emb)
+                
         self._save_local_db()
 
     def search(self, search_text: str, collection_name=None, top_k: int = 3) -> list[dict]:

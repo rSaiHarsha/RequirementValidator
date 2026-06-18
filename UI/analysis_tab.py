@@ -45,18 +45,26 @@ def process_task_with_controls(task_id, items, process_func, mode_val, selected_
     if state_index not in st.session_state:
         st.session_state[state_index] = 0
         
-    if state_results not in st.session_state or len(st.session_state[state_results]) == 0:
+    if state_results not in st.session_state:
         st.session_state[state_results] = []
-        # Attempt recovery from persistent disk cache
-        if os.path.exists(cache_file):
-            try:
-                with open(cache_file, "r") as f:
-                    recovered = json.load(f)
-                if recovered:
-                    st.session_state[state_results] = recovered
-                    st.session_state[state_index] = len(recovered)
-            except Exception:
-                pass
+        
+    # Proactive recovery to prevent race conditions on fast pause/resume
+    curr_len = len(st.session_state[state_results])
+    live = st.session_state.get(f"{task_id}_live_results", [])
+    if live and len(live) > curr_len:
+        st.session_state[state_results] = live
+        st.session_state[state_index] = len(live)
+        curr_len = len(live)
+        
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, "r") as f:
+                disk_live = json.load(f)
+            if disk_live and len(disk_live) > curr_len:
+                st.session_state[state_results] = disk_live
+                st.session_state[state_index] = len(disk_live)
+        except Exception:
+            pass
                 
     if state_total not in st.session_state:
         st.session_state[state_total] = len(items)
@@ -148,9 +156,6 @@ def process_task_with_controls(task_id, items, process_func, mode_val, selected_
                 if len(live) > len(st.session_state[state_results]):
                     st.session_state[state_results] = live
                     st.session_state[state_index] = len(live)
-            
-            # Clean up temporary state
-            st.session_state.pop(f"{task_id}_live_results", None)
             
         if st.session_state[state_index] >= total:
             st.session_state[state_status] = "completed"
@@ -250,6 +255,7 @@ def render_analysis_tab():
                         st.session_state[f"{action_id}_status"] = "running"
                         st.session_state[f"{action_id}_index"] = 0
                         st.session_state[f"{action_id}_results"] = []
+                        st.session_state.pop(f"{action_id}_live_results", None)
                         cache_file = os.path.join(os.getcwd(), f".cache_{action_id}.json")
                         if os.path.exists(cache_file):
                             try:

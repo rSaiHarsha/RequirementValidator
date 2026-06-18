@@ -5,6 +5,20 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from Model.requirement import Requirement
 
 
+def get_effective_system_prompt(default_prompt: str, mode: str = "analysis") -> str:
+    """Helper function to apply Prompt Sandbox override if enabled."""
+    try:
+        import streamlit as st
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        if get_script_run_ctx() is not None:
+            if st.session_state.get(f"use_custom_prompt_{mode}", False):
+                custom_prompt = st.session_state.get(f"custom_prompt_{mode}", "").strip()
+                if custom_prompt:
+                    return custom_prompt
+    except Exception:
+        pass
+    return default_prompt
+
 def clean_and_parse_json(text: str):
     """Helper to safely extract and parse a JSON block from LLM markdown response."""
     if not text or not isinstance(text, str):
@@ -111,6 +125,9 @@ def analyze_single_requirement(index, r, llm, rag, rag_context=None, selected_co
             "If it violates critical INCOSE rules and EARS Syntax, status MUST be 'Review'. Name the broken rule, and explain why.\n"
             "Otherwise, status MUST be 'Passed'."
         )
+        
+        system_prompt = get_effective_system_prompt(system_prompt, mode="analysis")
+        
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Full Requirement: \"{r.content}\"\nOriginal Rationale: \"{r.rationale}\""}
@@ -182,6 +199,8 @@ def analyze_batch(batch_items, llm, rag, selected_collections=None):
             "\nIn addition to standard rules, you MUST also conform to these project-specific rules retrieved from the knowledge base:\n"
             f"{combined_rag_context}\n"
         )
+
+    system_prompt = get_effective_system_prompt(system_prompt, mode="batch_analysis")
 
     user_content = "Analyze the following requirements:\n\n"
     for i, (idx, r) in enumerate(batch_items):
@@ -334,6 +353,8 @@ def correct_single_requirement(index, r, llm, rag, rag_context=None, selected_co
                 f"{rag_context}\n"
             )
             
+        system_prompt = get_effective_system_prompt(system_prompt, mode="process")
+            
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Full Requirement Context: \"{current_text}\""}
@@ -432,6 +453,8 @@ def correct_batch(batch_items, llm, rag, selected_collections=None):
             "\nIn addition to standard rules, you MUST also conform to these project-specific rules retrieved from the knowledge base:\n"
             f"{combined_rag_context}\n"
         )
+
+    system_prompt = get_effective_system_prompt(system_prompt, mode="batch_process")
 
     user_content = "Correct the following requirements:\n\n"
     for i, (idx, r) in enumerate(batch_items):

@@ -115,11 +115,10 @@ def analyze_single_requirement(index, r, llm, rag, rag_context=None, selected_co
             "  \"rationale\": \"Concise structured explanation\"\n"
             "}"
         )
-        if rag_context:
-            system_prompt += (
-                "\nIn addition to standard rules, you MUST also conform to these project-specific rules retrieved from the knowledge base:\n"
-                f"{rag_context}\n"
-            )
+        
+            
+                
+            
         system_prompt += (
             "\nAnalyze the requirement structurally. Parse it internally into Preconditions, System Name, Modality, and System Response. Then evaluate the rules.\n"
             "If it violates critical INCOSE rules and EARS Syntax, status MUST be 'Review'. Name the broken rule, and explain why.\n"
@@ -127,7 +126,11 @@ def analyze_single_requirement(index, r, llm, rag, rag_context=None, selected_co
         )
         
         system_prompt = get_effective_system_prompt(system_prompt, mode="analysis")
-        
+        if rag_context:
+            system_prompt += (
+"\nIn addition to standard rules, you MUST also conform to these project-specific rules retrieved from the knowledge base:\n"
+                f"{rag_context}\n"
+            )
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Full Requirement: \"{r.content}\"\nOriginal Rationale: \"{r.rationale}\""}
@@ -194,14 +197,14 @@ def analyze_batch(batch_items, llm, rag, selected_collections=None):
         if ctx:
             combined_rag_context += f"Context for Requirement {i+1}:\n{ctx}\n"
 
+    
+
+    system_prompt = get_effective_system_prompt(system_prompt, mode="batch_analysis")
     if combined_rag_context:
         system_prompt += (
             "\nIn addition to standard rules, you MUST also conform to these project-specific rules retrieved from the knowledge base:\n"
             f"{combined_rag_context}\n"
-        )
-
-    system_prompt = get_effective_system_prompt(system_prompt, mode="batch_analysis")
-
+        )    
     user_content = "Analyze the following requirements:\n\n"
     for i, (idx, r) in enumerate(batch_items):
         user_content += f"--- Requirement {i+1} ---\n"
@@ -346,14 +349,14 @@ def correct_single_requirement(index, r, llm, rag, rag_context=None, selected_co
             "  \"corrected_requirements\": [string]\n"
             "}"
         )
-
+        system_prompt = get_effective_system_prompt(system_prompt, mode="process")
         if rag_context:
             system_prompt += (
                 "\nIn addition to standard rules, you MUST also conform to these project-specific rules retrieved from the knowledge base:\n"
                 f"{rag_context}\n"
             )
             
-        system_prompt = get_effective_system_prompt(system_prompt, mode="process")
+        
             
         messages = [
             {"role": "system", "content": system_prompt},

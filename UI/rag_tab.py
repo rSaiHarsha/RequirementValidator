@@ -184,9 +184,11 @@ def generate_chunks_with_llm(page_markdown: str, page_num: int, llm=None) -> lis
         "1. Identify the logical topics, requirements, rules, configurations, or sections on the page.\n"
         "2. For each identified topic, write a clean, detailed text description containing all technical terms, "
         "codes, and variables. Retain full context so the chunk is self-explanatory.\n"
-        "3. Preserve the structure of Markdown tables, lists, or structured data within the text.\n"
-        "4. Assign appropriate metadata to each chunk.\n"
-        "5. Output the result ONLY as a valid JSON array of objects. Do not include any commentary outside the JSON.\n\n"
+        "3. CRITICAL TABLE RULE: If you encounter a large Markdown table (like a Capability Level matrix), DO NOT output the entire table as a single chunk. and "
+        "Instead, create a separate JSON chunk for each row or logical group of rows. Explicitly state the context (e.g., 'For Process Capability Level 3...') in the text of each chunk.\n"
+        "4. Preserve the structure of Markdown tables, lists, or structured data within the text.\n"
+        "5. Assign appropriate metadata to each chunk.\n"
+        "6. Output the result ONLY as a valid JSON array of objects. Do not include any commentary outside the JSON.\n\n"
         "Each object in the JSON array must follow this exact schema:\n"
         "[\n"
         "  {\n"
@@ -398,7 +400,11 @@ def render_rag_tab():
 
         # Trigger dialog configuration if not completed
         if not st.session_state.dialog_completed:
-            configure_target_collection_dialog(uploaded_file)
+            # Auto-open the dialog only when the file is newly uploaded
+            if st.session_state.get("last_uploaded_file") != uploaded_file.name:
+                st.session_state.last_uploaded_file = uploaded_file.name
+                configure_target_collection_dialog(uploaded_file)
+                
             st.warning("⚠️ Action Required: Configure collection settings and parameters inside the dialog.")
             if st.button("Open Settings Dialog", key="reopen_dlg_btn"):
                 configure_target_collection_dialog(uploaded_file)
@@ -504,6 +510,37 @@ def render_rag_tab():
                     })
                 # Restore engine documents
                 temp_engine.documents = old_docs
+
+            # Automatically ingest into vectorDB directly after processing (one by one)
+            if extracted_list:
+                # Pre-split any oversized chunks so the UI matches the database content exactly
+                split_extracted_list = []
+                for chunk in extracted_list:
+                    split_extracted_list.extend(st.session_state.rag._split_oversized_chunk(chunk))
+                extracted_list = split_extracted_list
+
+                st.markdown("### 📥 Ingesting Chunks to Vector DB...")
+                progress_bar_ingest = st.progress(0.0)
+                status_text_ingest = st.empty()
+                total_chunks = len(extracted_list)
+                
+                for idx, c in enumerate(extracted_list):
+                    status_text_ingest.text(f"Embedding and uploading chunk {idx+1}/{total_chunks}: {c.get('title', 'Untitled')}...")
+                    try:
+                        st.session_state.rag.ingest_chunk(
+                            collection_name=target_collection,
+                            chunk_id=c["id"],
+                            text=c["text"],
+                            title=c.get("title", "Untitled"),
+                            metadata=c.get("metadata", {})
+                        )
+                        c["status"] = "ingested"
+                    except Exception as e:
+                        c["status"] = "error"
+                        st.error(f"❌ Failed to ingest chunk {idx+1} ({c.get('title', 'Untitled')}): {e}")
+                    progress_bar_ingest.progress((idx + 1) / total_chunks)
+                
+                status_text_ingest.text("✓ Ingestion completed successfully!")
 
             st.session_state.extracted_chunks = extracted_list
             st.session_state.run_extraction = False

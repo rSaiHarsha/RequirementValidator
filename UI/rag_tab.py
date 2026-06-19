@@ -269,22 +269,20 @@ def generate_chunks_with_llm(page_markdown: str, page_num: int, llm=None) -> lis
 
     system_prompt = (
         "You are an expert systems engineer and technical writer. Your task is to read a Markdown-formatted page "
-        "extracted from a technical manual/specification and break it down into one or more high-quality, "
-        "standalone text chunks optimized for semantic search and RAG.\n\n"
+        "extracted from a technical manual/specification and break it down into high-quality, standalone text chunks "
+        "optimized for semantic search and RAG.\n\n"
         "Instructions:\n"
-        "1. Identify the logical topics, requirements, rules, configurations, or sections on the page.\n"
-        "2. For each identified topic, write a clean, detailed text description containing all technical terms, "
-        "codes, and variables. Retain full context so the chunk is self-explanatory.\n"
-        "3. CRITICAL TABLE RULE: If you encounter a large Markdown table (like a Capability Level matrix), DO NOT output the entire table as a single chunk. and "
-        "Instead, create a separate JSON chunk for each row or logical group of rows the chunks should be retrievable during similarity search, hence Explicitly state the context  in the text of each chunk.\n"
-        "4. Preserve the structure of Markdown tables, lists, or structured data within the text.\n"
-        "5. Assign appropriate metadata to each chunk.\n"
+        "1. STRICT SIZE LIMIT: Each chunk's text MUST be strictly limited to a maximum of 400 to 500 words (or ~1600-2000 characters) to ensure it fits within the embedding model's 512-token limit.\n"
+        "2. LOGICAL CHUNKING & SPLITTING: Group related paragraphs, requirements, lists, and tables. If a page or topic is short, represent it in a single chunk. If a page has too much content and exceeds 400-500 words, you MUST split it into multiple chunks.\n"
+        "3. CONNECTING CONTEXT: When a topic or page is split into multiple chunks, you MUST include clear connecting context in the subsequent chunks. Prepend or weave in information pointing back to the main topic or parent section (e.g., prefixing with '[Continued from {topic} / Section {name}]') so that the subsequent chunk does not lose semantic meaning when retrieved independently.\n"
+        "4. TABLE RULE: Do not aggressively split tables row-by-row into tiny fragments. Keep tables intact if they fit within the 400-500 word limit. If a table is extremely large and must be split, group logical blocks of rows and include the table header and topic context in each split part.\n"
+        "5. Preserve the structure of Markdown tables, lists, or structured data within the text, and assign appropriate metadata to each chunk.\n"
         "6. Output the result ONLY as a valid JSON array of objects. Do not include any commentary outside the JSON.\n\n"
         "Each object in the JSON array must follow this exact schema:\n"
         "[\n"
         "  {\n"
-        "    \"title\": \"A descriptive title of the topic\",\n"
-        "    \"text\": \"The detailed content containing technical details, codes, Markdown tables, etc. Retain full context.\",\n"
+        "    \"title\": \"A descriptive title of the topic (e.g. 'Topic Name (Part 2)')\",\n"
+        "    \"text\": \"The detailed content under 450 words. If this is a continuation, start with clear connecting context referencing the parent topic.\",\n"
         "    \"metadata\": {\n"
         "      \"item_type\": \"requirement\", \"configuration\", \"architecture\", \"api\", \"definition\", or \"other\",\n"
         "      \"item_id\": \"Any specific ID found (e.g., SWS_Can_00123, R12, C4) or null\",\n"
@@ -571,7 +569,7 @@ def render_rag_tab():
                 st.markdown("### 📥 Live Chunk Ingestion Preview")
                 live_preview_container = st.container()
 
-                MAX_WORKERS = 2
+                MAX_WORKERS = 1
                 with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                     # Map the markdown text dictionary to the actual 1-indexed page number
                     futures = {

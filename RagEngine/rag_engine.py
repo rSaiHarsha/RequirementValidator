@@ -79,7 +79,7 @@ class RAGEngine:
                     raise e
         raise Exception("Max retries exceeded for batch embeddings.")
 
-    def _split_oversized_chunk(self, chunk: dict, max_chars: int = 1600) -> list[dict]:
+    def _split_oversized_chunk(self, chunk: dict, max_chars: int = 1800) -> list[dict]:
         """Splits a single chunk into multiple smaller chunks if it exceeds max_chars."""
         text = chunk.get("text", "")
         if len(text) <= max_chars:
@@ -89,6 +89,8 @@ class RAGEngine:
         # Wrap text cleanly without cutting words in half
         text_pieces = textwrap.wrap(text, width=max_chars, break_long_words=False)
         
+        original_title = chunk.get("title", "Untitled")
+        
         for i, piece in enumerate(text_pieces):
             # Deep copy to prevent mutating the original metadata across iterations
             import copy
@@ -96,7 +98,12 @@ class RAGEngine:
             
             # FIXED: Generate a brand new, valid UUID for Qdrant
             new_chunk["id"] = str(uuid.uuid4())
-            new_chunk["text"] = piece
+            
+            # Prepend context to subsequent chunks so context is not lost during retrieval
+            if i > 0:
+                new_chunk["text"] = f"[Continued from '{original_title}':] {piece}"
+            else:
+                new_chunk["text"] = piece
             
             # Store the original ID and part number in metadata for your reference
             if "metadata" not in new_chunk:
@@ -105,7 +112,6 @@ class RAGEngine:
             new_chunk["metadata"]["chunk_part"] = i + 1
             
             # Add a part identifier to the title for clarity
-            original_title = new_chunk.get("title", "Untitled")
             new_chunk["title"] = f"{original_title} (Part {i+1})"
             
             sub_chunks.append(new_chunk)

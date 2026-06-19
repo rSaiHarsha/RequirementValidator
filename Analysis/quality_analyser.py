@@ -5,15 +5,47 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from Model.requirement import Requirement
 
 
-def clean_and_parse_json(text: str) -> dict:
+def get_effective_system_prompt(default_prompt: str, mode: str = "analysis") -> str:
+    """Helper function to apply Prompt Sandbox override if enabled."""
+    try:
+        import streamlit as st
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        if get_script_run_ctx() is not None:
+            if st.session_state.get(f"use_custom_prompt_{mode}", False):
+                custom_prompt = st.session_state.get(f"custom_prompt_{mode}", "").strip()
+                if custom_prompt:
+                    return custom_prompt
+    except Exception:
+        pass
+    return default_prompt
+
+def clean_and_parse_json(text: str):
     """Helper to safely extract and parse a JSON block from LLM markdown response."""
     if not text or not isinstance(text, str):
         raise ValueError("LLM response is empty or not a string.")
-    start = text.find("{")
-    end = text.rfind("}")
+        
+    start_obj = text.find("{")
+    end_obj = text.rfind("}")
+    start_arr = text.find("[")
+    end_arr = text.rfind("]")
+    
+    # Determine if it's an array or object based on which brackets enclose the content
+    is_array = False
+    if start_arr != -1 and end_arr != -1:
+        if start_obj == -1 or start_arr < start_obj:
+            is_array = True
+            
+    if is_array:
+        start = start_arr
+        end = end_arr
+    else:
+        start = start_obj
+        end = end_obj
+        
     if start == -1 or end == -1:
         raise ValueError("No JSON block found in LLM response.")
     text = text[start:end+1]
+    
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
@@ -26,18 +58,32 @@ def clean_and_parse_json(text: str) -> dict:
             raise ValueError(f"Failed to parse JSON even after cleanup: {str(e)}")
             
     # Normalize dictionary to guarantee deterministic key/values
-    normalized_data = {}
     if isinstance(data, dict):
+        normalized_data = {}
         for k, v in data.items():
             key = k.strip()
-            # In python, keys can just remain as they are or we can lower case them
-            # We'll map them carefully for expected ones if needed
             if isinstance(v, str):
                 v = v.strip()
             if key.lower() == "status" and isinstance(v, str):
                 v = "Passed" if v.lower() == "passed" else "Review"
             normalized_data[key.lower()] = v
         return normalized_data
+    elif isinstance(data, list):
+        normalized_list = []
+        for item in data:
+            if isinstance(item, dict):
+                normalized_data = {}
+                for k, v in item.items():
+                    key = k.strip()
+                    if isinstance(v, str):
+                        v = v.strip()
+                    if key.lower() == "status" and isinstance(v, str):
+                        v = "Passed" if v.lower() == "passed" else "Review"
+                    normalized_data[key.lower()] = v
+                normalized_list.append(normalized_data)
+            else:
+                normalized_list.append(item)
+        return normalized_list
     return data
 
 def analyze_single_requirement(index, r, llm, rag, rag_context=None, selected_collections=None):
@@ -69,16 +115,22 @@ def analyze_single_requirement(index, r, llm, rag, rag_context=None, selected_co
             "  \"rationale\": \"Concise structured explanation\"\n"
             "}"
         )
-        if rag_context:
-            system_prompt += (
-                "\nIn addition to standard rules, you MUST also conform to these project-specific rules retrieved from the knowledge base:\n"
-                f"{rag_context}\n"
-            )
+        
+            
+                
+            
         system_prompt += (
             "\nAnalyze the requirement structurally. Parse it internally into Preconditions, System Name, Modality, and System Response. Then evaluate the rules.\n"
             "If it violates critical INCOSE rules and EARS Syntax, status MUST be 'Review'. Name the broken rule, and explain why.\n"
             "Otherwise, status MUST be 'Passed'."
         )
+        
+        system_prompt = get_effective_system_prompt(system_prompt, mode="analysis")
+        if rag_context:
+            system_prompt += (
+"\nIn addition to standard rules, you MUST also conform to these project-specific rules retrieved from the knowledge base:\n"
+                f"{rag_context}\n"
+            )
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Full Requirement: \"{r.content}\"\nOriginal Rationale: \"{r.rationale}\""}
@@ -109,19 +161,97 @@ def analyze_single_requirement(index, r, llm, rag, rag_context=None, selected_co
 
 def analyze_batch(batch_items, llm, rag, selected_collections=None):
     results = {}
-    with ThreadPoolExecutor(max_workers=min(10, len(batch_items))) as ex:
-        fs = {ex.submit(analyze_single_requirement, idx, r, llm, rag, selected_collections=selected_collections): idx for idx, r in batch_items}
-        for f in as_completed(fs):
-            idx = fs[f]
-            _, res = f.result()
-            results[idx] = res
-    return results
+    if not batch_items:
+        return results
 
-def analyze_requirements_batch(requirements: List[Requirement], llm, progress_callback=None, rag=None, selected_collections=None) -> List[Dict[str, Any]]:
+    rag_contexts = []
+    if rag:
+        try:
+            reqs_text = [r.content for _, r in batch_items]
+            rag_contexts = rag.query_batch(reqs_text, collection_name=selected_collections, top_k=2)
+        except Exception:
+            rag_contexts = [""] * len(batch_items)
+    else:
+        rag_contexts = [""] * len(batch_items)
+
+    system_prompt = (
+        "You are a strict, deterministic Systems Engineering Requirements Auditor.\n"
+        "Your task is to analyze multiple engineering requirements using INCOSE guidelines and EARS syntax.\n"
+        "You MUST evaluate each requirement structurally and check compliance.\n\n"
+        "Rules for Output:\n"
+        "1. Return ONLY valid JSON exactly matching the schema below.\n"
+        "2. Do NOT include any explanation or markdown formatting outside the JSON.\n"
+        "3. The output MUST be a JSON array of objects, in the EXACT same order as the inputs.\n\n"
+        "JSON Schema:\n"
+        "[\n"
+        "  {\n"
+        "    \"status\": \"Passed\" or \"Review\",\n"
+        "    \"failed_rule\": \"Rule name\" or \"None\",\n"
+        "    \"rationale\": \"Concise structured explanation\"\n"
+        "  }\n"
+        "]"
+    )
+
+    combined_rag_context = ""
+    for i, ctx in enumerate(rag_contexts):
+        if ctx:
+            combined_rag_context += f"Context for Requirement {i+1}:\n{ctx}\n"
+
+    
+
+    system_prompt = get_effective_system_prompt(system_prompt, mode="batch_analysis")
+    if combined_rag_context:
+        system_prompt += (
+            "\nIn addition to standard rules, you MUST also conform to these project-specific rules retrieved from the knowledge base:\n"
+            f"{combined_rag_context}\n"
+        )    
+    user_content = "Analyze the following requirements:\n\n"
+    for i, (idx, r) in enumerate(batch_items):
+        user_content += f"--- Requirement {i+1} ---\n"
+        user_content += f"ID: {r.name}\n"
+        user_content += f"Text: \"{r.content}\"\n"
+        user_content += f"Rationale: \"{r.rationale}\"\n\n"
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content}
+    ]
+
+    try:
+        response = llm.get_response(messages, stream=False)
+        raw_text = response.choices[0].message.content
+        data = clean_and_parse_json(raw_text)
+        
+        if not isinstance(data, list) or len(data) != len(batch_items):
+            raise ValueError("LLM did not return an array of the correct length.")
+            
+        for i, (idx, r) in enumerate(batch_items):
+            item_data = data[i]
+            results[idx] = {
+                "ID": r.name,
+                "Requirement": r.content,
+                "State": r.state,
+                "ASIL": r.asil,
+                "Status": item_data.get("status", "Passed"),
+                "Failed Rule": item_data.get("failed_rule", "None"),
+                "Rationale": item_data.get("rationale", "Complies with EARS/INCOSE rules")
+            }
+        return results
+    except Exception as e:
+        # Fallback to single parallel processing
+        fallback_results = {}
+        with ThreadPoolExecutor(max_workers=min(10, len(batch_items))) as ex:
+            fs = {ex.submit(analyze_single_requirement, idx, r, llm, rag, rag_contexts[i] if rag_contexts else None, selected_collections): idx for i, (idx, r) in enumerate(batch_items)}
+            for f in as_completed(fs):
+                idx = fs[f]
+                _, res = f.result()
+                fallback_results[idx] = res
+        return fallback_results
+
+def analyze_requirements_batch(requirements: List[Requirement], llm, progress_callback=None, rag=None, selected_collections=None, batch_size=10) -> List[Dict[str, Any]]:
     total = len(requirements)
     analysis_data = [None] * total
     
-    batch_size = 10
     batches = []
     for i in range(0, total, batch_size):
         batches.append([(idx, requirements[idx]) for idx in range(i, min(i + batch_size, total))])
@@ -153,7 +283,7 @@ def analyze_requirements_batch(requirements: List[Requirement], llm, progress_ca
                 
     return analysis_data
 
-def analyze_requirements(requirements: List[Requirement], llm=None, progress_callback=None, rag=None, mode="single", selected_collections=None) -> List[Dict[str, Any]]:
+def analyze_requirements(requirements: List[Requirement], llm=None, progress_callback=None, rag=None, mode="single", selected_collections=None, batch_size=10) -> List[Dict[str, Any]]:
     if not llm:
         raise ValueError("LLMManager is required for quality analysis.")
 
@@ -162,7 +292,7 @@ def analyze_requirements(requirements: List[Requirement], llm=None, progress_cal
         return []
 
     if mode == "batch":
-        return analyze_requirements_batch(requirements, llm, progress_callback, rag, selected_collections)
+        return analyze_requirements_batch(requirements, llm, progress_callback, rag, selected_collections, batch_size)
 
     rag_contexts = [""] * total
     if rag:
@@ -219,12 +349,14 @@ def correct_single_requirement(index, r, llm, rag, rag_context=None, selected_co
             "  \"corrected_requirements\": [string]\n"
             "}"
         )
-
+        system_prompt = get_effective_system_prompt(system_prompt, mode="process")
         if rag_context:
             system_prompt += (
                 "\nIn addition to standard rules, you MUST also conform to these project-specific rules retrieved from the knowledge base:\n"
                 f"{rag_context}\n"
             )
+            
+        
             
         messages = [
             {"role": "system", "content": system_prompt},
@@ -285,13 +417,90 @@ def correct_single_requirement(index, r, llm, rag, rag_context=None, selected_co
 
 def correct_batch(batch_items, llm, rag, selected_collections=None):
     results = {}
-    with ThreadPoolExecutor(max_workers=min(10, len(batch_items))) as ex:
-        fs = {ex.submit(correct_single_requirement, idx, r, llm, rag, selected_collections=selected_collections): idx for idx, r in batch_items}
-        for f in as_completed(fs):
-            idx = fs[f]
-            _, r_obj, action_part, corrected_action, full_corrected = f.result()
-            results[idx] = (r_obj, action_part, corrected_action, full_corrected)
-    return results
+    if not batch_items:
+        return results
+
+    rag_contexts = []
+    if rag:
+        try:
+            reqs_text = [r.content for _, r in batch_items]
+            rag_contexts = rag.query_batch(reqs_text, collection_name=selected_collections, top_k=2)
+        except Exception:
+            rag_contexts = [""] * len(batch_items)
+    else:
+        rag_contexts = [""] * len(batch_items)
+
+    system_prompt = (
+        "You are a strict, deterministic Senior Systems Engineer and Requirements Expert.\n"
+        "Your task is to analyze and correct multiple engineering requirements using INCOSE guidelines and EARS syntax.\n"
+        "You MUST adhere to these strict rules:\n"
+        "1. Return ONLY valid JSON exactly matching the schema below.\n"
+        "2. Do NOT include any explanation or markdown formatting outside the JSON.\n"
+        "3. The output MUST be a JSON array of objects, in the EXACT same order as the inputs.\n\n"
+        "JSON Schema:\n"
+        "[\n"
+        "  {\n"
+        "    \"split_required\": boolean,\n"
+        "    \"corrected_requirements\": [string]\n"
+        "  }\n"
+        "]"
+    )
+
+    combined_rag_context = ""
+    for i, ctx in enumerate(rag_contexts):
+        if ctx:
+            combined_rag_context += f"Context for Requirement {i+1}:\n{ctx}\n"
+
+    if combined_rag_context:
+        system_prompt += (
+            "\nIn addition to standard rules, you MUST also conform to these project-specific rules retrieved from the knowledge base:\n"
+            f"{combined_rag_context}\n"
+        )
+
+    system_prompt = get_effective_system_prompt(system_prompt, mode="batch_process")
+
+    user_content = "Correct the following requirements:\n\n"
+    for i, (idx, r) in enumerate(batch_items):
+        user_content += f"--- Requirement {i+1} ---\n"
+        user_content += f"ID: {r.name}\n"
+        user_content += f"Text: \"{r.content}\"\n\n"
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content}
+    ]
+
+    try:
+        response = llm.get_response(messages, stream=False)
+        raw_text = response.choices[0].message.content
+        data = clean_and_parse_json(raw_text)
+        
+        if not isinstance(data, list) or len(data) != len(batch_items):
+            raise ValueError("LLM did not return an array of the correct length.")
+            
+        for i, (idx, r) in enumerate(batch_items):
+            item_data = data[i]
+            corrected_requirements = item_data.get("corrected_requirements", [])
+            if corrected_requirements:
+                full_corrected = "\n".join(req.strip() for req in corrected_requirements if req and req.strip())
+            else:
+                full_corrected = r.content
+                
+            if not full_corrected:
+                full_corrected = r.content
+                
+            results[idx] = (r, r.content, full_corrected, full_corrected)
+        return results
+    except Exception as e:
+        # Fallback to single parallel processing
+        fallback_results = {}
+        with ThreadPoolExecutor(max_workers=min(10, len(batch_items))) as ex:
+            fs = {ex.submit(correct_single_requirement, idx, r, llm, rag, rag_contexts[i] if rag_contexts else None, selected_collections): idx for i, (idx, r) in enumerate(batch_items)}
+            for f in as_completed(fs):
+                idx = fs[f]
+                _, r_obj, action_part, corrected_action, full_corrected = f.result()
+                fallback_results[idx] = (r_obj, action_part, corrected_action, full_corrected)
+        return fallback_results
 
 def _expand_corrections(correction_data_map):
     correction_data = []
@@ -318,11 +527,10 @@ def _expand_corrections(correction_data_map):
             })
     return correction_data
 
-def correct_requirements_batch(requirements: List[Requirement], llm, progress_callback=None, rag=None, selected_collections=None) -> List[Dict[str, Any]]:
+def correct_requirements_batch(requirements: List[Requirement], llm, progress_callback=None, rag=None, selected_collections=None, batch_size=10) -> List[Dict[str, Any]]:
     total = len(requirements)
     correction_data_map = {}
     
-    batch_size = 10
     batches = []
     for i in range(0, total, batch_size):
         batches.append([(idx, requirements[idx]) for idx in range(i, min(i + batch_size, total))])
@@ -358,7 +566,7 @@ def correct_requirements_batch(requirements: List[Requirement], llm, progress_ca
                 
     return _expand_corrections(correction_data_map)
 
-def correct_requirements(requirements: List[Requirement], llm=None, progress_callback=None, rag=None, mode="single", selected_collections=None) -> List[Dict[str, Any]]:
+def correct_requirements(requirements: List[Requirement], llm=None, progress_callback=None, rag=None, mode="single", selected_collections=None, batch_size=10) -> List[Dict[str, Any]]:
     if not llm:
         raise ValueError("LLMManager is required for quality analysis.")
 
@@ -367,7 +575,7 @@ def correct_requirements(requirements: List[Requirement], llm=None, progress_cal
         return []
 
     if mode == "batch":
-        return correct_requirements_batch(requirements, llm, progress_callback, rag, selected_collections)
+        return correct_requirements_batch(requirements, llm, progress_callback, rag, selected_collections, batch_size)
 
     rag_contexts = [""] * total
     if rag:

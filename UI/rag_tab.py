@@ -261,6 +261,80 @@ def safe_get_response(active_llm, messages, stream=False, max_retries=5):
             else:
                 raise e
     raise Exception("Max retries exceeded for chat response.")
+def merge_small_chunks(chunks: list[dict], threshold_chars: int = 1600) -> list[dict]:
+    if not chunks:
+        return []
+    
+    merged_chunks = []
+    current_chunk = None
+    
+    for c in chunks:
+        if not isinstance(c, dict):
+            continue
+        
+        c_text = c.get("text", "")
+        
+        if current_chunk is None:
+            current_chunk = c
+            continue
+            
+        current_text = current_chunk.get("text", "")
+        
+        # Check if merging would exceed the threshold
+        if len(current_text) + len(c_text) + 2 <= threshold_chars:
+            # Merge text
+            current_chunk["text"] = current_text + "\n\n" + c_text
+            
+            # Merge title
+            t1 = current_chunk.get("title", "Untitled")
+            t2 = c.get("title", "Untitled")
+            if t1 == t2:
+                current_chunk["title"] = t1
+            else:
+                combined_title = f"{t1} / {t2}"
+                if len(combined_title) > 100:
+                    current_chunk["title"] = t1
+                else:
+                    current_chunk["title"] = combined_title
+            
+            # Merge metadata safely
+            meta1 = current_chunk.get("metadata", {})
+            meta2 = c.get("metadata", {})
+            merged_meta = meta1.copy()
+            
+            # keywords union
+            k1 = meta1.get("keywords", [])
+            k2 = meta2.get("keywords", [])
+            if isinstance(k1, list) and isinstance(k2, list):
+                merged_meta["keywords"] = list(set(k1 + k2))
+            
+            # item_id
+            id1 = meta1.get("item_id")
+            id2 = meta2.get("item_id")
+            if id1 and id2 and id1 != id2:
+                merged_meta["item_id"] = f"{id1}, {id2}"
+            elif id2:
+                merged_meta["item_id"] = id2
+                
+            # item_name
+            name1 = meta1.get("item_name")
+            name2 = meta2.get("item_name")
+            if name1 and name2 and name1 != name2:
+                merged_meta["item_name"] = f"{name1} & {name2}"
+            elif name2:
+                merged_meta["item_name"] = name2
+                
+            current_chunk["metadata"] = merged_meta
+        else:
+            # Merging exceeds threshold, save current_chunk and start new one
+            merged_chunks.append(current_chunk)
+            current_chunk = c
+            
+    if current_chunk is not None:
+        merged_chunks.append(current_chunk)
+        
+    return merged_chunks
+
 def generate_chunks_with_llm(page_markdown: str, page_num: int, llm=None) -> list[dict]:
     """Chunk layout-aware Markdown into technical specification entries."""
     if not page_markdown.strip():
@@ -349,6 +423,7 @@ def generate_chunks_with_llm(page_markdown: str, page_num: int, llm=None) -> lis
                             break
                 if "text" not in c:
                     c["text"] = json.dumps(c)
+            chunks = merge_small_chunks(chunks, threshold_chars=1600)
             return chunks
     except Exception as e:
         print(f"[UI/rag_tab] LLM chunk generation error: {e}", flush=True)

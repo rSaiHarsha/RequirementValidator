@@ -219,3 +219,5 @@ __marimo__/
 .streamlit/secrets.toml
 
 api_key.env
+
+*.pkl

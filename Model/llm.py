@@ -9,21 +9,39 @@ env_path = Path(".env") if Path(".env").exists() else Path("api_key.env")
 load_dotenv(env_path)
 
 class LLMManager:
-    def __init__(self, model_name="nvidia/llama-3.3-nemotron-super-49b-v1.5"):
-        # Check Streamlit secrets first, fallback to environment variable
-        api_key = None
+    def __init__(self, model_name="gemini-2.5-flash-lite"):
+        # Check Streamlit secrets first, fallback to environment variables
+        gemini_api_key = None
         try:
             import streamlit as st
-            api_key = st.secrets["API_KEY"]
+            gemini_api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("API_KEY")
         except Exception:
             pass
-        
-        if not api_key:
-            api_key = os.getenv("NVIDIA_API_KEY")
+        if not gemini_api_key:
+            gemini_api_key = os.getenv("GEMINI_API_KEY")
             
+        nvidia_api_key = None
+        try:
+            import streamlit as st
+            nvidia_api_key = st.secrets.get("NVIDIA_API_KEY") or st.secrets.get("API_KEY")
+        except Exception:
+            pass
+        if not nvidia_api_key:
+            nvidia_api_key = os.getenv("NVIDIA_API_KEY")
+
+        # Fallback configurations
+        if not gemini_api_key:
+            gemini_api_key = nvidia_api_key
+        if not nvidia_api_key:
+            nvidia_api_key = gemini_api_key
+           
         self.client = OpenAI(
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            api_key=gemini_api_key
+        )
+        self.embed_client = OpenAI(
             base_url="https://integrate.api.nvidia.com/v1",
-            api_key=api_key
+            api_key=nvidia_api_key
         )
         self.model_name = model_name
         self.embedding_model = "nvidia/nv-embedqa-e5-v5"
@@ -34,15 +52,41 @@ class LLMManager:
         retries = getattr(self, "retries", 3)
 
         import time
+        import re
         last_exception = None
         for attempt in range(retries + 1):
             try:
+                # Proactively space out API calls to prevent hitting free-tier limits
+                time.sleep(1.0)
                 return api_func(*args, **kwargs)
             except Exception as e:
                 last_exception = e
+                err_msg = str(e)
                 if attempt < retries:
-                    wait_time = 2 ** attempt
-                    print(f"[LLMManager] API call failed: {e}. Retrying {attempt+1}/{retries} in {wait_time}s...", flush=True)
+                    # Check for rate limits / quota exceeded errors
+                    if "429" in err_msg or "Too Many Requests" in err_msg or "rate limit" in err_msg.lower() or "quota" in err_msg.lower():
+                        # Extract Google API's recommended retry delay dynamically
+                        retry_match = re.search(r'retry\s+in\s+([\d\.]+)\s*s', err_msg, re.IGNORECASE)
+                        if retry_match:
+                            wait_time = float(retry_match.group(1)) + 1.5
+                        else:
+                            wait_time = (2 ** attempt) * 5
+                        
+                        status_msg = f"⏳ API Quota limit reached. Pausing & retrying in {wait_time:.1f}s... (Attempt {attempt+1}/{retries})"
+                    else:
+                        wait_time = 2 ** attempt
+                        status_msg = f"⚠️ API call failed: {e}. Retrying in {wait_time}s... (Attempt {attempt+1}/{retries})"
+                    
+                    print(f"[LLMManager] {status_msg}", flush=True)
+                    
+                    # Log warning to the Streamlit UI dynamically
+                    try:
+                        import streamlit as st
+                        st.toast(status_msg, icon="⏳")
+                        st.warning(status_msg)
+                    except Exception:
+                        pass
+                        
                     time.sleep(wait_time)
                 else:
                     print(f"[LLMManager] API call failed after {retries} retries: {e}", flush=True)
@@ -58,7 +102,6 @@ class LLMManager:
                 messages=trimmed_messages,
                 temperature=0.0,
                 top_p=0.01,
-                seed=42,
                 max_tokens=8192,
                 stream=stream
             )
@@ -75,7 +118,7 @@ class LLMManager:
     def get_embedding(self, text: str):
         """Generates contextual float embeddings using the NVIDIA NIM footprint"""
         response = self._retry_api_call(
-            self.client.embeddings.create,
+            self.embed_client.embeddings.create,
             input=[text],
             model=self.embedding_model,
             encoding_format="float",
@@ -88,7 +131,7 @@ class LLMManager:
         if not texts:
             return []
         response = self._retry_api_call(
-            self.client.embeddings.create,
+            self.embed_client.embeddings.create,
             input=texts,
             model=self.embedding_model,
             encoding_format="float",
@@ -97,3 +140,5 @@ class LLMManager:
         # Ensure correct ordering by sorting on the index property
         sorted_data = sorted(response.data, key=lambda x: x.index)
         return [item.embedding for item in sorted_data]
+        
+        

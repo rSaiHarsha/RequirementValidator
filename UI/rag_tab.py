@@ -261,7 +261,6 @@ def safe_get_response(active_llm, messages, stream=False, max_retries=5):
             else:
                 raise e
     raise Exception("Max retries exceeded for chat response.")
-
 def generate_chunks_with_llm(page_markdown: str, page_num: int, llm=None) -> list[dict]:
     """Chunk layout-aware Markdown into technical specification entries."""
     if not page_markdown.strip():
@@ -272,17 +271,17 @@ def generate_chunks_with_llm(page_markdown: str, page_num: int, llm=None) -> lis
         "extracted from a technical manual/specification and break it down into high-quality, standalone text chunks "
         "optimized for semantic search and RAG.\n\n"
         "Instructions:\n"
-        "1. STRICT SIZE LIMIT: Each chunk's text MUST be strictly limited to a maximum of 400 to 500 words (or ~1600-2000 characters) to ensure it fits within the embedding model's 512-token limit.\n"
-        "2. LOGICAL CHUNKING & SPLITTING: Group related paragraphs, requirements, lists, and tables. If a page or topic is short, represent it in a single chunk. If a page has too much content and exceeds 400-500 words, you MUST split it into multiple chunks.\n"
+        "1. STRICT SIZE LIMIT: Each chunk's text MUST be strictly limited to a maximum of 250 to 300 words (or ~1000-1200 characters) to ensure it fits well within the embedding model's 512-token limit.\n"
+        "2. LOGICAL CHUNKING & SPLITTING: Group related paragraphs, requirements, lists, and tables. If a page or topic is short, represent it in a single chunk. If a page has too much content and exceeds 250-300 words, you MUST split it into multiple chunks.\n"
         "3. CONNECTING CONTEXT: When a topic or page is split into multiple chunks, you MUST include clear connecting context in the subsequent chunks. Prepend or weave in information pointing back to the main topic or parent section (e.g., prefixing with '[Continued from {topic} / Section {name}]') so that the subsequent chunk does not lose semantic meaning when retrieved independently.\n"
-        "4. TABLE RULE: Do not aggressively split tables row-by-row into tiny fragments. Keep tables intact if they fit within the 400-500 word limit. If a table is extremely large and must be split, group logical blocks of rows and include the table header and topic context in each split part.\n"
-        "5. Preserve the structure of Markdown tables, lists, or structured data within the text, and assign appropriate metadata to each chunk.\n"
+        "4. TABLE RULE: Do not aggressively split tables row-by-row into tiny fragments. Keep tables intact if they fit within the 250-300 word limit. If a table is extremely large and must be split, group logical blocks of rows and include the table header and topic context in each split part.\n"
+        "5. Preserve the structure of Markdown tables, lists, or structured data within the text, and assign appropriate metadata to each chunk.\n and remove any copyright or disclaimer or legal  related stuff donot add them to chunks or create new ones for them."
         "6. Output the result ONLY as a valid JSON array of objects. Do not include any commentary outside the JSON.\n\n"
         "Each object in the JSON array must follow this exact schema:\n"
         "[\n"
         "  {\n"
         "    \"title\": \"A descriptive title of the topic (e.g. 'Topic Name (Part 2)')\",\n"
-        "    \"text\": \"The detailed content under 450 words. If this is a continuation, start with clear connecting context referencing the parent topic.\",\n"
+        "    \"text\": \"The detailed content under 250 words. If this is a continuation, start with clear connecting context referencing the parent topic.\",\n"
         "    \"metadata\": {\n"
         "      \"item_type\": \"requirement\", \"configuration\", \"architecture\", \"api\", \"definition\", or \"other\",\n"
         "      \"item_id\": \"Any specific ID found (e.g., SWS_Can_00123, R12, C4) or null\",\n"
@@ -427,7 +426,10 @@ def configure_target_collection_dialog(file_obj):
             extract_ready = False
     else:
         st.markdown("### ⚙️ 2. File Parameters")
-        st.info("Direct text content parsing will be used.")
+        if file_obj.name.lower().endswith(('.xlsx', '.xls')):
+            st.info("Excel binary row parsing will be used.")
+        else:
+            st.info("Direct text content parsing will be used.")
 
     if st.button("🧱 Confirm & Load Chunks", type="primary", disabled=not extract_ready, key="dlg_confirm_btn"):
         if not target_collection:
@@ -467,8 +469,8 @@ def render_rag_tab():
 
     # File Uploader
     uploaded_file = st.file_uploader(
-        "Drop foundational files here (.pdf, .txt, .csv, .md, .log)", 
-        type=["pdf", "txt", "csv", "md", "log"],
+        "Drop foundational files here (.pdf, .txt, .csv, .md, .log, .xlsx, .xls)", 
+        type=["pdf", "txt", "csv", "md", "log", "xlsx", "xls"],
         accept_multiple_files=False,
         key="rag_file_uploader"
     )

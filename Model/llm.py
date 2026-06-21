@@ -79,7 +79,7 @@ class LLMManager:
             input=[text],
             model=self.embedding_model,
             encoding_format="float",
-            extra_body={"input_type": "query", "truncate": "NONE"}
+            extra_body={"input_type": "query", "truncate": "END"}
         )
         return response.data[0].embedding
 
@@ -92,7 +92,7 @@ class LLMManager:
             input=texts,
             model=self.embedding_model,
             encoding_format="float",
-            extra_body={"input_type": "passage", "truncate": "NONE"}
+            extra_body={"input_type": "passage", "truncate": "END"}
         )
         # Ensure correct ordering by sorting on the index property
         sorted_data = sorted(response.data, key=lambda x: x.index)

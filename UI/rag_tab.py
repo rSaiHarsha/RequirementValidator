@@ -261,6 +261,79 @@ def safe_get_response(active_llm, messages, stream=False, max_retries=5):
             else:
                 raise e
     raise Exception("Max retries exceeded for chat response.")
+def merge_small_chunks(chunks: list[dict], threshold_chars: int = 1600) -> list[dict]:
+    if not chunks:
+        return []
+    
+    merged_chunks = []
+    current_chunk = None
+    
+    for c in chunks:
+        if not isinstance(c, dict):
+            continue
+        
+        c_text = c.get("text", "")
+        
+        if current_chunk is None:
+            current_chunk = c
+            continue
+            
+        current_text = current_chunk.get("text", "")
+        
+        # Check if merging would exceed the threshold
+        if len(current_text) + len(c_text) + 2 <= threshold_chars:
+            # Merge text
+            current_chunk["text"] = current_text + "\n\n" + c_text
+            
+            # Merge title
+            t1 = current_chunk.get("title", "Untitled")
+            t2 = c.get("title", "Untitled")
+            if t1 == t2:
+                current_chunk["title"] = t1
+            else:
+                combined_title = f"{t1} / {t2}"
+                if len(combined_title) > 100:
+                    current_chunk["title"] = t1
+                else:
+                    current_chunk["title"] = combined_title
+            
+            # Merge metadata safely
+            meta1 = current_chunk.get("metadata", {})
+            meta2 = c.get("metadata", {})
+            merged_meta = meta1.copy()
+            
+            # keywords union
+            k1 = meta1.get("keywords", [])
+            k2 = meta2.get("keywords", [])
+            if isinstance(k1, list) and isinstance(k2, list):
+                merged_meta["keywords"] = list(set(k1 + k2))
+            
+            # item_id
+            id1 = meta1.get("item_id")
+            id2 = meta2.get("item_id")
+            if id1 and id2 and id1 != id2:
+                merged_meta["item_id"] = f"{id1}, {id2}"
+            elif id2:
+                merged_meta["item_id"] = id2
+                
+            # item_name
+            name1 = meta1.get("item_name")
+            name2 = meta2.get("item_name")
+            if name1 and name2 and name1 != name2:
+                merged_meta["item_name"] = f"{name1} & {name2}"
+            elif name2:
+                merged_meta["item_name"] = name2
+                
+            current_chunk["metadata"] = merged_meta
+        else:
+            # Merging exceeds threshold, save current_chunk and start new one
+            merged_chunks.append(current_chunk)
+            current_chunk = c
+            
+    if current_chunk is not None:
+        merged_chunks.append(current_chunk)
+        
+    return merged_chunks
 
 def generate_chunks_with_llm(page_markdown: str, page_num: int, llm=None) -> list[dict]:
     """Chunk layout-aware Markdown into technical specification entries."""
@@ -269,22 +342,20 @@ def generate_chunks_with_llm(page_markdown: str, page_num: int, llm=None) -> lis
 
     system_prompt = (
         "You are an expert systems engineer and technical writer. Your task is to read a Markdown-formatted page "
-        "extracted from a technical manual/specification and break it down into one or more high-quality, "
-        "standalone text chunks optimized for semantic search and RAG.\n\n"
+        "extracted from a technical manual/specification and break it down into high-quality, standalone text chunks "
+        "optimized for semantic search and RAG.\n\n"
         "Instructions:\n"
-        "1. Identify the logical topics, requirements, rules, configurations, or sections on the page.\n"
-        "2. For each identified topic, write a clean, detailed text description containing all technical terms, "
-        "codes, and variables. Retain full context so the chunk is self-explanatory.\n"
-        "3. CRITICAL TABLE RULE: If you encounter a large Markdown table (like a Capability Level matrix), DO NOT output the entire table as a single chunk. and "
-        "Instead, create a separate JSON chunk for each row or logical group of rows the chunks should be retrievable during similarity search, hence Explicitly state the context  in the text of each chunk.\n"
-        "4. Preserve the structure of Markdown tables, lists, or structured data within the text.\n"
-        "5. Assign appropriate metadata to each chunk.\n"
+        "1. STRICT SIZE LIMIT: Each chunk's text MUST be strictly limited to a maximum of 250 to 300 words (or ~1000-1200 characters) to ensure it fits well within the embedding model's 512-token limit.\n"
+        "2. LOGICAL CHUNKING & SPLITTING: Group related paragraphs, requirements, lists, and tables. If a page or topic is short, represent it in a single chunk. If a page has too much content and exceeds 250-300 words, you MUST split it into multiple chunks.\n"
+        "3. CONNECTING CONTEXT: When a topic or page is split into multiple chunks, you MUST include clear connecting context in the subsequent chunks. Prepend or weave in information pointing back to the main topic or parent section (e.g., prefixing with '[Continued from {topic} / Section {name}]') so that the subsequent chunk does not lose semantic meaning when retrieved independently.\n"
+        "4. TABLE RULE: Do not aggressively split tables row-by-row into tiny fragments. Keep tables intact if they fit within the 250-300 word limit. If a table is extremely large and must be split, group logical blocks of rows and include the table header and topic context in each split part.\n"
+        "5. Preserve the structure of Markdown tables, lists, or structured data within the text, and assign appropriate metadata to each chunk.\n and remove any copyright or disclaimer or legal  related stuff donot add them to chunks or create new ones for them."
         "6. Output the result ONLY as a valid JSON array of objects. Do not include any commentary outside the JSON.\n\n"
         "Each object in the JSON array must follow this exact schema:\n"
         "[\n"
         "  {\n"
-        "    \"title\": \"A descriptive title of the topic\",\n"
-        "    \"text\": \"The detailed content containing technical details, codes, Markdown tables, etc. Retain full context.\",\n"
+        "    \"title\": \"A descriptive title of the topic (e.g. 'Topic Name (Part 2)')\",\n"
+        "    \"text\": \"The detailed content under 250 words. If this is a continuation, start with clear connecting context referencing the parent topic.\",\n"
         "    \"metadata\": {\n"
         "      \"item_type\": \"requirement\", \"configuration\", \"architecture\", \"api\", \"definition\", or \"other\",\n"
         "      \"item_id\": \"Any specific ID found (e.g., SWS_Can_00123, R12, C4) or null\",\n"
@@ -352,6 +423,7 @@ def generate_chunks_with_llm(page_markdown: str, page_num: int, llm=None) -> lis
                             break
                 if "text" not in c:
                     c["text"] = json.dumps(c)
+            chunks = merge_small_chunks(chunks, threshold_chars=1600)
             return chunks
     except Exception as e:
         print(f"[UI/rag_tab] LLM chunk generation error: {e}", flush=True)
@@ -429,7 +501,10 @@ def configure_target_collection_dialog(file_obj):
             extract_ready = False
     else:
         st.markdown("### ⚙️ 2. File Parameters")
-        st.info("Direct text content parsing will be used.")
+        if file_obj.name.lower().endswith(('.xlsx', '.xls')):
+            st.info("Excel binary row parsing will be used.")
+        else:
+            st.info("Direct text content parsing will be used.")
 
     if st.button("🧱 Confirm & Load Chunks", type="primary", disabled=not extract_ready, key="dlg_confirm_btn"):
         if not target_collection:
@@ -469,8 +544,8 @@ def render_rag_tab():
 
     # File Uploader
     uploaded_file = st.file_uploader(
-        "Drop foundational files here (.pdf, .txt, .csv, .md, .log)", 
-        type=["pdf", "txt", "csv", "md", "log"],
+        "Drop foundational files here (.pdf, .txt, .csv, .md, .log, .xlsx, .xls)", 
+        type=["pdf", "txt", "csv", "md", "log", "xlsx", "xls"],
         accept_multiple_files=False,
         key="rag_file_uploader"
     )
@@ -571,7 +646,7 @@ def render_rag_tab():
                 st.markdown("### 📥 Live Chunk Ingestion Preview")
                 live_preview_container = st.container()
 
-                MAX_WORKERS = 2
+                MAX_WORKERS = 1
                 with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                     # Map the markdown text dictionary to the actual 1-indexed page number
                     futures = {

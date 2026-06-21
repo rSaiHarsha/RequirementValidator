@@ -7,3 +7,4 @@ qdrant-client
 pymupdf
 pdfplumber
 pymupdf4llm
+openpyxl

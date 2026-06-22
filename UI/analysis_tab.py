@@ -45,18 +45,26 @@ def process_task_with_controls(task_id, items, process_func, mode_val, selected_
     if state_index not in st.session_state:
         st.session_state[state_index] = 0
         
-    if state_results not in st.session_state or len(st.session_state[state_results]) == 0:
+    if state_results not in st.session_state:
         st.session_state[state_results] = []
-        # Attempt recovery from persistent disk cache
-        if os.path.exists(cache_file):
-            try:
-                with open(cache_file, "r") as f:
-                    recovered = json.load(f)
-                if recovered:
-                    st.session_state[state_results] = recovered
-                    st.session_state[state_index] = len(recovered)
-            except Exception:
-                pass
+        
+    # Proactive recovery to prevent race conditions on fast pause/resume
+    curr_len = len(st.session_state[state_results])
+    live = st.session_state.get(f"{task_id}_live_results", [])
+    if live and len(live) > curr_len:
+        st.session_state[state_results] = live
+        st.session_state[state_index] = len(live)
+        curr_len = len(live)
+        
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, "r") as f:
+                disk_live = json.load(f)
+            if disk_live and len(disk_live) > curr_len:
+                st.session_state[state_results] = disk_live
+                st.session_state[state_index] = len(disk_live)
+        except Exception:
+            pass
                 
     if state_total not in st.session_state:
         st.session_state[state_total] = len(items)
@@ -66,34 +74,30 @@ def process_task_with_controls(task_id, items, process_func, mode_val, selected_
     results = st.session_state[state_results]
     total = len(items)
 
-    col1, col2, col3 = st.columns(3)
+    is_active = status in ["running", "paused"] and current_index < total
+    button_label = "⏸️ Pause" if status == "running" else "▶️ Start"
     
-    start_label = "▶️ Start" if current_index == 0 else "▶️ Resume"
-    if col1.button(start_label, disabled=(status == "running" or current_index >= total), key=f"start_{task_id}"):
-        st.session_state[state_status] = "running"
-        st.rerun()
-        
-    if col2.button("⏸️ Pause", disabled=(status != "running"), key=f"stop_{task_id}"):
-        st.session_state[state_status] = "stopped"
-        st.rerun()
-        
-    if col3.button("🔄 Restart", disabled=(status == "running" and current_index == 0), key=f"restart_{task_id}"):
-        st.session_state[state_status] = "running"
-        st.session_state[state_index] = 0
-        st.session_state[state_results] = []
-        if os.path.exists(cache_file):
-            try:
-                os.remove(cache_file)
-            except Exception:
-                pass
+    if st.button(button_label, disabled=not is_active, key=f"toggle_{task_id}"):
+        if status == "running":
+            st.session_state[state_status] = "paused"
+        else:
+            st.session_state[state_status] = "running"
         st.rerun()
 
     progress_bar = st.progress(current_index / total if total > 0 else 0.0)
     status_text = st.empty()
     df_placeholder = st.empty()
 
+    if len(results) > 0:
+        df_partial = pd.DataFrame(results)
+        if not df_partial.empty:
+            if render_df_func:
+                render_df_func(df_partial, df_placeholder)
+            else:
+                df_placeholder.dataframe(df_partial, use_container_width=True, height=400)
+
     if status == "running" and current_index < total:
-        chunk_size = 5 if mode_val == "single" else 10
+        chunk_size = 5 if mode_val == "single" else st.session_state.get("batch_size", 10)
         status_text.text(f"Processing requirement {current_index + 1} of {total}...")
         
         chunk = items[current_index : current_index + chunk_size]
@@ -124,7 +128,7 @@ def process_task_with_controls(task_id, items, process_func, mode_val, selected_
                         else:
                             df_placeholder.dataframe(df_partial, use_container_width=True, height=400)
                             
-            chunk_res = process_func(chunk, progress_callback=chunk_callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val)
+            chunk_res = process_func(chunk, progress_callback=chunk_callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val, batch_size=chunk_size)
         
         finally:
             if chunk_res is not None:
@@ -153,16 +157,13 @@ def process_task_with_controls(task_id, items, process_func, mode_val, selected_
                     st.session_state[state_results] = live
                     st.session_state[state_index] = len(live)
             
-            # Clean up temporary state
-            st.session_state.pop(f"{task_id}_live_results", None)
-            
         if st.session_state[state_index] >= total:
             st.session_state[state_status] = "completed"
             
     elif status == "completed":
         status_text.text(f"Completed processing {total} requirements.")
     else:
-        display_status = "Paused" if status == "stopped" else status.title()
+        display_status = "Paused" if status == "paused" else status.title()
         status_text.text(f"{display_status} at requirement {current_index} of {total}.")
         
     return st.session_state[state_results], st.session_state[state_status] == "running"
@@ -208,14 +209,8 @@ def render_analysis_tab():
         st.markdown("---")
         st.markdown("### ⚡ V-Cycle Analysis Panel")
         
-        # Select processing mode using premium radio button layout
-        mode_label = st.radio(
-            "⚙️ LLM Processing Mode",
-            ["Single Processing (Parallel)", "Batch Processing (Fast)"],
-            horizontal=True,
-            help="Single processing analyzes requirements concurrently item-by-item. Batch processing groups requirements together to optimize speed and API usage."
-        )
-        mode_val = "batch" if "Batch" in mode_label else "single"
+        # Processing mode is now determined via the sidebar configuration.
+        mode_val = "batch" if st.session_state.get("batch_mode_enabled", False) else "single"
         
         selected_collections_val = st.session_state.get("target_rag_collections", None)
             
@@ -260,13 +255,14 @@ def render_analysis_tab():
                         st.session_state[f"{action_id}_status"] = "running"
                         st.session_state[f"{action_id}_index"] = 0
                         st.session_state[f"{action_id}_results"] = []
+                        st.session_state.pop(f"{action_id}_live_results", None)
                         cache_file = os.path.join(os.getcwd(), f".cache_{action_id}.json")
                         if os.path.exists(cache_file):
                             try:
                                 os.remove(cache_file)
                             except Exception:
                                 pass
-                    elif current_status == "stopped":
+                    elif current_status == "paused":
                         st.session_state[f"{action_id}_status"] = "running"
             btn_index += 1
 
@@ -324,10 +320,8 @@ def render_analysis_tab():
                     m1.metric("Requirements Checked", total)
                     m2.metric("Passed", passed)
                     m3.metric("Review Needed", review)
-                    
-                    render_swe1_df(df, st.empty())
                 elif not is_running and df.empty:
-                    if st.session_state.get("analyse_swe1_status") == "stopped":
+                    if st.session_state.get("analyse_swe1_status") == "paused":
                         st.info("⏸️ Execution paused. No requirements have completed processing yet. Click 'Resume' to continue.")
                     
                 if is_running:
@@ -361,10 +355,8 @@ def render_analysis_tab():
                     m1.metric("Requirements Checked", total)
                     m2.metric("Passed", passed)
                     m3.metric("Review Needed", review)
-                    
-                    render_swe2_df(df, st.empty())
                 elif not is_running and df.empty:
-                    if st.session_state.get("analyse_swe2_status") == "stopped":
+                    if st.session_state.get("analyse_swe2_status") == "paused":
                         st.info("⏸️ Execution paused. No requirements have completed processing yet. Click 'Resume' to continue.")
                     
                 if is_running:
@@ -394,8 +386,7 @@ def render_analysis_tab():
                         st.success("🎉 All requirements are already compliant! No corrections needed.")
                     elif not df.empty:
                         st.caption("We have corrected the vague, non-binding, or non-measurable requirements automatically:")
-                        render_correct_swe1_df(df, st.empty())
-                    elif df.empty and st.session_state.get("correct_swe1_status") == "stopped":
+                    elif df.empty and st.session_state.get("correct_swe1_status") == "paused":
                         st.info("⏸️ Execution paused. No requirements have completed processing yet. Click 'Resume' to continue.")
                     
                 if is_running:
@@ -425,8 +416,7 @@ def render_analysis_tab():
                         st.success("🎉 All architectural requirements are already compliant! No corrections needed.")
                     elif not df.empty:
                         st.caption("We have corrected the vague, non-binding, or non-measurable architectural requirements automatically:")
-                        render_correct_swe2_df(df, st.empty())
-                    elif df.empty and st.session_state.get("correct_swe2_status") == "stopped":
+                    elif df.empty and st.session_state.get("correct_swe2_status") == "paused":
                         st.info("⏸️ Execution paused. No requirements have completed processing yet. Click 'Resume' to continue.")
                     
                 if is_running:
@@ -564,7 +554,7 @@ def render_analysis_tab():
                     progress_bar.progress(curr / tot)
                     status_text.text(f"Generating export audit {curr} of {tot}...")
                 try:
-                    res = st.session_state.analyzer.analyze_requirements(active_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val)
+                    res = st.session_state.analyzer.analyze_requirements(active_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val, batch_size=st.session_state.get("batch_size", 10))
                 finally:
                     progress_bar.empty()
                     status_text.empty()
@@ -577,7 +567,7 @@ def render_analysis_tab():
                     progress_bar.progress(curr / tot)
                     status_text.text(f"Generating export corrections {curr} of {tot}...")
                 try:
-                    res = st.session_state.analyzer.correct_requirements(active_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val)
+                    res = st.session_state.analyzer.correct_requirements(active_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val, batch_size=st.session_state.get("batch_size", 10))
                 finally:
                     progress_bar.empty()
                     status_text.empty()

@@ -146,8 +146,8 @@ with st.sidebar:
         options=NVIDIA_MODELS,
         index=rag_idx,
         help="Model used for layout-aware document chunking and parsing."
-        )
-
+    )
+    
     st.markdown("---")
     st.subheader("🤖 Active LLM Model")
     st.info(f"**Model:**\n`{st.session_state.llm.model_name}`")

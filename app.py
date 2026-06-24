@@ -21,6 +21,12 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "last_action" not in st.session_state:
     st.session_state.last_action = None
+if "version_major" not in st.session_state:
+    st.session_state.version_major = 1
+if "version_minor" not in st.session_state:
+    st.session_state.version_minor = 0
+if "version_patch" not in st.session_state:
+    st.session_state.version_patch = 0
 
 @st.dialog("📚 Database Chunk Explorer", width="large")
 def view_chunks_dialog(collection_name: str):
@@ -66,7 +72,7 @@ def view_chunks_dialog(collection_name: str):
                 
                 st.markdown(f"""
                 <div style="background: rgba(30, 41, 59, 0.45); border: 1px solid rgba(255,255,255,0.08); padding: 12px; border-radius: 8px; margin-bottom: 10px;">
-                    <div style="font-size: 0.78rem; color: #94a3b8; margin-bottom: 6px;">
+                     <div style="font-size: 0.78rem; color: #94a3b8; margin-bottom: 6px;">
                         <strong>Chunk #{idx}</strong> | ID: <code>{cid}</code> | Type: <code>{itype}</code> | Ref: <code>{iid}</code>
                     </div>
                     <details style="cursor: pointer;">
@@ -77,7 +83,10 @@ def view_chunks_dialog(collection_name: str):
                 """, unsafe_allow_html=True)
 
 # System Configuration Sidebar
+
 with st.sidebar:
+    st.subheader("📦 Application Version")
+    st.info(f"**Version:** `v{st.session_state.version_major}.{st.session_state.version_minor}.{st.session_state.version_patch}`")
     st.header("⚙️ Configuration")
     st.markdown("Customize system parameters and API fault-tolerance.")
     
@@ -100,7 +109,7 @@ with st.sidebar:
         st.session_state.batch_size = st.number_input("Batch Size", min_value=1, value=10, step=1)
     else:
         st.session_state.batch_size = 5
-
+ 
     st.markdown("---")
     st.subheader("📜 History Settings")
     st.session_state.history_max_items = st.number_input(
@@ -115,6 +124,7 @@ with st.sidebar:
     st.subheader("🤖 Active LLM Model")
     st.info(f"**Model:**\n`{st.session_state.llm.model_name}`")
     st.caption("Powered by NVIDIA NIM Core engine.")
+
 
     st.markdown("---")
     st.subheader("📚 Collections & Documents")

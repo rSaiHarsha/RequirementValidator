@@ -242,8 +242,30 @@ def process_task_with_controls(task_id, items, process_func, mode_val, selected_
         
     return st.session_state[state_results], st.session_state[state_status] == "running"
 
+def get_failed_requirements(requirements, action_id, file_name=None):
+    """Retrieve and filter requirements based on the latest analysis results in history."""
+    latest_results = None
+    if "requirement_history" in st.session_state:
+        for item in st.session_state.requirement_history:
+            if item.get("action_id") == action_id and item.get("type") == "Analyze":
+                if file_name is None or item.get("source_file") == file_name:
+                    latest_results = item.get("result")
+                    break
+    
+    if not latest_results:
+        return []
+        
+    filtered_reqs = []
+    for idx, req in enumerate(requirements):
+        if idx < len(latest_results):
+            status_val = str(latest_results[idx].get("Status", "")).upper()
+            if status_val not in ["PASS", "PASSED", "SUCCESS"]:
+                filtered_reqs.append(req)
+    return filtered_reqs
+
 def render_analysis_tab():
     st.header("INCOSE / ASPICE Automated Audit Tool")
+
     mode_val = "single"
     should_rerun = False
     
@@ -394,38 +416,52 @@ def render_analysis_tab():
             if not swe1_reqs:
                 st.info("No requirements found in the uploaded SWE.1 file.")
             else:
-                def render_correct_swe1_df(df, placeholder):
-                    placeholder.dataframe(df, use_container_width=True, height=400)
-                    
-                correction_data, is_running = process_task_with_controls(
-                    "correct_swe1", 
-                    swe1_reqs, 
-                    st.session_state.analyzer.correct_requirements,
-                    mode_val, 
-                    selected_collections_val,
-                    render_correct_swe1_df
-                )
-                if is_running:
-                    should_rerun = True
+                filtered_swe1_reqs = get_failed_requirements(swe1_reqs, "analyse_swe1", swe1_files.name if swe1_files else None)
+                if not filtered_swe1_reqs:
+                    st.info("No failed requirements found to correct (all requirements passed or no analysis history).")
+                    st.session_state["correct_swe1_status"] = "idle"
+                    st.session_state.last_action = None
+                    st.rerun()
+                else:
+                    def render_correct_swe1_df(df, placeholder):
+                        placeholder.dataframe(df, use_container_width=True, height=400)
+                        
+                    correction_data, is_running = process_task_with_controls(
+                        "correct_swe1", 
+                        filtered_swe1_reqs, 
+                        st.session_state.analyzer.correct_requirements,
+                        mode_val, 
+                        selected_collections_val,
+                        render_correct_swe1_df
+                    )
+                    if is_running:
+                        should_rerun = True
                     
         elif action == "correct_swe2" and active_status in ["running", "paused"]:
             st.markdown("#### 🛠️ Automated Corrections: SWE.2 Requirements")
             if not swe2_reqs:
                 st.info("No requirements found in the uploaded SWE.2 file.")
             else:
-                def render_correct_swe2_df(df, placeholder):
-                    placeholder.dataframe(df, use_container_width=True, height=400)
-                    
-                correction_data, is_running = process_task_with_controls(
-                    "correct_swe2", 
-                    swe2_reqs, 
-                    st.session_state.analyzer.correct_requirements,
-                    mode_val, 
-                    selected_collections_val,
-                    render_correct_swe2_df
-                )
-                if is_running:
-                    should_rerun = True
+                filtered_swe2_reqs = get_failed_requirements(swe2_reqs, "analyse_swe2", swe2_files.name if swe2_files else None)
+                if not filtered_swe2_reqs:
+                    st.info("No failed requirements found to correct (all requirements passed or no analysis history).")
+                    st.session_state["correct_swe2_status"] = "idle"
+                    st.session_state.last_action = None
+                    st.rerun()
+                else:
+                    def render_correct_swe2_df(df, placeholder):
+                        placeholder.dataframe(df, use_container_width=True, height=400)
+                        
+                    correction_data, is_running = process_task_with_controls(
+                        "correct_swe2", 
+                        filtered_swe2_reqs, 
+                        st.session_state.analyzer.correct_requirements,
+                        mode_val, 
+                        selected_collections_val,
+                        render_correct_swe2_df
+                    )
+                    if is_running:
+                        should_rerun = True
                     
         elif action == "compare_trace":
             st.markdown("#### 🔗 Bidirectional Traceability: SWE.1 (HLD) ↔ SWE.2 (LLD)")
@@ -498,7 +534,10 @@ def render_analysis_tab():
                     progress_bar.progress(curr / tot)
                     status_text.text(f"Generating export corrections {curr} of {tot}...")
                 try:
-                    res = st.session_state.analyzer.correct_requirements(active_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val, batch_size=st.session_state.get("batch_size", 10))
+                    filtered_active_reqs = get_failed_requirements(active_reqs, f"analyse_{action_suffix}", file_name_label)
+                    if not filtered_active_reqs:
+                        return []
+                    res = st.session_state.analyzer.correct_requirements(filtered_active_reqs, progress_callback=callback, rag=st.session_state.rag, mode=mode_val, selected_collections=selected_collections_val, batch_size=st.session_state.get("batch_size", 10))
                 finally:
                     progress_bar.empty()
                     status_text.empty()

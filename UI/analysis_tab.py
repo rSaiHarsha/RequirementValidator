@@ -22,6 +22,78 @@ def apply_df_styling(df_style, style_func, subset):
     return df_style.applymap(style_func, subset=subset)
 
 
+def color_status(val):
+    color = '#d4edda' if val == 'Passed' else '#f8d7da'
+    text_color = '#155724' if val == 'Passed' else '#721c24'
+    return f'background-color: {color}; color: {text_color}; font-weight: bold;'
+
+
+def get_history_limit() -> int:
+    """Read the history limit from st.session_state, defaulting to 5."""
+    try:
+        if "history_max_items" in st.session_state:
+            return max(2, int(st.session_state.history_max_items))
+    except Exception:
+        pass
+    return 5
+
+
+def add_to_history(action_id: str, results: list, source_name: str):
+    """Add a completed run's results to the session state requirement history."""
+    if "requirement_history" not in st.session_state:
+        st.session_state.requirement_history = []
+        
+    added_key = f"{action_id}_added_to_history"
+    if st.session_state.get(added_key):
+        return
+        
+    if not results:
+        return
+        
+    import uuid
+    from datetime import datetime
+    
+    action_type = "Analyze" if "analyse" in action_id else "Correct"
+    
+    history_item = {
+        "id": str(uuid.uuid4()),
+        "type": action_type,
+        "action_id": action_id,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "requirement": f"{action_id.replace('_', ' ').title()}: {source_name}",
+        "result": results,
+        "source_file": source_name
+    }
+    
+    # Prepend to history (newest first)
+    st.session_state.requirement_history.insert(0, history_item)
+    
+    # Mark as added
+    st.session_state[added_key] = True
+    
+    # Auto-cleanup based on config limit
+    limit = get_history_limit()
+    if len(st.session_state.requirement_history) > limit:
+        st.session_state.requirement_history = st.session_state.requirement_history[:limit]
+
+    # Reset task state to idle so it doesn't show in the active panel anymore
+    st.session_state[f"{action_id}_status"] = "idle"
+    st.session_state[f"{action_id}_results"] = []
+    st.session_state.pop(f"{action_id}_index", None)
+    st.session_state.pop(f"{action_id}_live_results", None)
+    
+    # Clear cache file to save space
+    cache_file = os.path.join(os.getcwd(), f".cache_{action_id}.json")
+    if os.path.exists(cache_file):
+        try:
+            os.remove(cache_file)
+        except Exception:
+            pass
+            
+    # Trigger a rerun so the new history item shows up immediately
+    st.rerun()
+
+
 def get_cached_result(action_key, current_metadata, compute_func):
     # Forcing bypass of cache to ensure new grouped data structure is executed
     return compute_func()
@@ -77,12 +149,13 @@ def process_task_with_controls(task_id, items, process_func, mode_val, selected_
     is_active = status in ["running", "paused"] and current_index < total
     button_label = "⏸️ Pause" if status == "running" else "▶️ Start"
     
-    if st.button(button_label, disabled=not is_active, key=f"toggle_{task_id}"):
-        if status == "running":
-            st.session_state[state_status] = "paused"
-        else:
-            st.session_state[state_status] = "running"
-        st.rerun()
+    if status in ["running", "paused"]:
+        if st.button(button_label, disabled=not is_active, key=f"toggle_{task_id}"):
+            if status == "running":
+                st.session_state[state_status] = "paused"
+            else:
+                st.session_state[state_status] = "running"
+            st.rerun()
 
     progress_bar = st.progress(current_index / total if total > 0 else 0.0)
     status_text = st.empty()
@@ -159,6 +232,7 @@ def process_task_with_controls(task_id, items, process_func, mode_val, selected_
             
         if st.session_state[state_index] >= total:
             st.session_state[state_status] = "completed"
+            st.rerun()
             
     elif status == "completed":
         status_text.text(f"Completed processing {total} requirements.")
@@ -171,6 +245,10 @@ def process_task_with_controls(task_id, items, process_func, mode_val, selected_
 def render_analysis_tab():
     st.header("INCOSE / ASPICE Automated Audit Tool")
     mode_val = "single"
+    should_rerun = False
+    
+    if "requirement_history" not in st.session_state:
+        st.session_state.requirement_history = []
     
     st.markdown("### 📂 Automotive V-Cycle Upload Matrix")
     st.caption("Upload specs documents corresponding to different stages of the Automotive V-Cycle.")
@@ -182,28 +260,19 @@ def render_analysis_tab():
         with col_up2:
             swe2_files = st.file_uploader("SWE.2 - Software Architectural Design (.CSV)", type=["csv"], accept_multiple_files=False, key="swe2_uploader")
             
-    with st.expander("🎨 Upload Design Diagrams (Image format)", expanded=True):
-        col_img1, col_img2 = st.columns(2)
-        with col_img1:
-            hld_file = st.file_uploader("Upload HLD (High Level Design) Diagram", type=["png", "jpg", "jpeg"], accept_multiple_files=False, key="hld_uploader")
-        with col_img2:
-            lld_file = st.file_uploader("Upload LLD (Low Level Design) Diagram", type=["png", "jpg", "jpeg"], accept_multiple_files=False, key="lld_uploader")
-            
-    if hld_file or lld_file:
-        st.markdown("#### 🖼️ Uploaded Diagram Previews")
-        preview_col1, preview_col2 = st.columns(2)
-        with preview_col1:
-            if hld_file:
-                st.image(hld_file, caption="High Level Design (HLD) Preview", use_container_width=True)
-        with preview_col2:
-            if lld_file:
-                st.image(lld_file, caption="Low Level Design (LLD) Preview", use_container_width=True)
-            
+    # Check completed tasks and add to history
+    for task_action in ["analyse_swe1", "analyse_swe2", "correct_swe1", "correct_swe2"]:
+        status_key = f"{task_action}_status"
+        if st.session_state.get(status_key) == "completed":
+            results_key = f"{task_action}_results"
+            completed_results = st.session_state.get(results_key, [])
+            if completed_results:
+                source_name = swe1_files.name if "swe1" in task_action and swe1_files else (swe2_files.name if "swe2" in task_action and swe2_files else "Requirements Specification")
+                add_to_history(task_action, completed_results, source_name)
+                
     # --- DYNAMIC ACTION PANEL BASED ON UPLOADS ---
     has_swe1 = swe1_files is not None
     has_swe2 = swe2_files is not None
-    has_hld = hld_file is not None
-    has_lld = lld_file is not None
 
     if has_swe1 or has_swe2:
         st.markdown("---")
@@ -236,12 +305,7 @@ def render_analysis_tab():
             actions_to_render.append(("🛠️ Correct SWE.2 Requirements", "correct_swe2", "secondary"))
             actions_to_render.append(("🔗 Compare Traceability (SWE.1 ↔ SWE.2)", "compare_trace", "warning"))
             
-        # 3. Dynamic diagram mapping comparisons
-        if has_swe1 and has_hld:
-            actions_to_render.append(("🔍 Compare SWE.1 with HLD", "compare_hld", "info"))
-            
-        if has_swe2 and has_lld:
-            actions_to_render.append(("🔍 Compare SWE.2 with LLD", "compare_lld", "info"))
+
 
         # Render buttons dynamically
         for title, action_id, btn_type in actions_to_render:
@@ -256,6 +320,7 @@ def render_analysis_tab():
                         st.session_state[f"{action_id}_index"] = 0
                         st.session_state[f"{action_id}_results"] = []
                         st.session_state.pop(f"{action_id}_live_results", None)
+                        st.session_state.pop(f"{action_id}_added_to_history", None)
                         cache_file = os.path.join(os.getcwd(), f".cache_{action_id}.json")
                         if os.path.exists(cache_file):
                             try:
@@ -267,7 +332,12 @@ def render_analysis_tab():
             btn_index += 1
 
     # --- EXECUTION RESULTS DISPLAY PANEL ---
-    if (has_swe1 or has_swe2) and st.session_state.last_action:
+    action = st.session_state.last_action
+    active_status = st.session_state.get(f"{action}_status", "idle") if action else "idle"
+    is_active_task = action in ["analyse_swe1", "analyse_swe2", "correct_swe1", "correct_swe2"] and active_status in ["running", "paused"]
+    is_trace_active = action == "compare_trace"
+    
+    if (has_swe1 or has_swe2) and action and (is_active_task or is_trace_active):
         st.markdown("---")
         st.subheader("📊 Execution Results")
         
@@ -276,23 +346,12 @@ def render_analysis_tab():
         swe2_reqs = load_uploaded_requirements(swe2_files) if has_swe2 else []
         df = pd.DataFrame()
         
-        # Color helper functions for display styling
-        def color_status(val):
-            color = '#d4edda' if val == 'Passed' else '#f8d7da'
-            text_color = '#155724' if val == 'Passed' else '#721c24'
-            return f'background-color: {color}; color: {text_color}; font-weight: bold;'
-
         def color_trace(val):
             color = '#d4edda' if val == 'Covered' else '#f8d7da'
             text_color = '#155724' if val == 'Covered' else '#721c24'
             return f'background-color: {color}; color: {text_color}; font-weight: bold;'
-
-        def color_align(val):
-            color = '#d4edda' if val in ['Fully Aligned', 'Aligned'] else ('#fff3cd' if val == 'Missing in Specification' else '#f8d7da')
-            text_color = '#155724' if val in ['Fully Aligned', 'Aligned'] else ('#856404' if val == 'Missing in Specification' else '#721c24')
-            return f'background-color: {color}; color: {text_color}; font-weight: bold;'
             
-        if action == "analyse_swe1":
+        if action == "analyse_swe1" and active_status in ["running", "paused"]:
             st.markdown("#### 🔍 Quality Audit: SWE.1 Software Requirements Specification")
             if not swe1_reqs:
                 st.info("No requirements found in the uploaded SWE.1 file.")
@@ -308,26 +367,10 @@ def render_analysis_tab():
                     selected_collections_val,
                     render_swe1_df
                 )
-                
-                df = pd.DataFrame(analysis_data) if analysis_data else pd.DataFrame()
-                
-                if not is_running and not df.empty:
-                    total = len(df)
-                    passed = sum(1 for item in analysis_data if item.get("Status") == "Passed")
-                    review = total - passed
-                    
-                    m1, m2, m3 = st.columns(3)
-                    m1.metric("Requirements Checked", total)
-                    m2.metric("Passed", passed)
-                    m3.metric("Review Needed", review)
-                elif not is_running and df.empty:
-                    if st.session_state.get("analyse_swe1_status") == "paused":
-                        st.info("⏸️ Execution paused. No requirements have completed processing yet. Click 'Resume' to continue.")
-                    
                 if is_running:
-                    st.rerun()
+                    should_rerun = True
                 
-        elif action == "analyse_swe2":
+        elif action == "analyse_swe2" and active_status in ["running", "paused"]:
             st.markdown("#### 🔍 Quality Audit: SWE.2 Software Architectural Design")
             if not swe2_reqs:
                 st.info("No requirements found in the uploaded SWE.2 file.")
@@ -343,26 +386,10 @@ def render_analysis_tab():
                     selected_collections_val,
                     render_swe2_df
                 )
-                
-                df = pd.DataFrame(analysis_data) if analysis_data else pd.DataFrame()
-                
-                if not is_running and not df.empty:
-                    total = len(df)
-                    passed = sum(1 for item in analysis_data if item.get("Status") == "Passed")
-                    review = total - passed
-                    
-                    m1, m2, m3 = st.columns(3)
-                    m1.metric("Requirements Checked", total)
-                    m2.metric("Passed", passed)
-                    m3.metric("Review Needed", review)
-                elif not is_running and df.empty:
-                    if st.session_state.get("analyse_swe2_status") == "paused":
-                        st.info("⏸️ Execution paused. No requirements have completed processing yet. Click 'Resume' to continue.")
-                    
                 if is_running:
-                    st.rerun()
+                    should_rerun = True
                 
-        elif action == "correct_swe1":
+        elif action == "correct_swe1" and active_status in ["running", "paused"]:
             st.markdown("#### 🛠️ Automated Corrections: SWE.1 Requirements")
             if not swe1_reqs:
                 st.info("No requirements found in the uploaded SWE.1 file.")
@@ -378,21 +405,10 @@ def render_analysis_tab():
                     selected_collections_val,
                     render_correct_swe1_df
                 )
-                
-                df = pd.DataFrame(correction_data) if correction_data else pd.DataFrame()
-                
-                if not is_running:
-                    if st.session_state.get("correct_swe1_status") == "completed" and df.empty:
-                        st.success("🎉 All requirements are already compliant! No corrections needed.")
-                    elif not df.empty:
-                        st.caption("We have corrected the vague, non-binding, or non-measurable requirements automatically:")
-                    elif df.empty and st.session_state.get("correct_swe1_status") == "paused":
-                        st.info("⏸️ Execution paused. No requirements have completed processing yet. Click 'Resume' to continue.")
-                    
                 if is_running:
-                    st.rerun()
+                    should_rerun = True
                     
-        elif action == "correct_swe2":
+        elif action == "correct_swe2" and active_status in ["running", "paused"]:
             st.markdown("#### 🛠️ Automated Corrections: SWE.2 Requirements")
             if not swe2_reqs:
                 st.info("No requirements found in the uploaded SWE.2 file.")
@@ -408,19 +424,8 @@ def render_analysis_tab():
                     selected_collections_val,
                     render_correct_swe2_df
                 )
-                
-                df = pd.DataFrame(correction_data) if correction_data else pd.DataFrame()
-                
-                if not is_running:
-                    if st.session_state.get("correct_swe2_status") == "completed" and df.empty:
-                        st.success("🎉 All architectural requirements are already compliant! No corrections needed.")
-                    elif not df.empty:
-                        st.caption("We have corrected the vague, non-binding, or non-measurable architectural requirements automatically:")
-                    elif df.empty and st.session_state.get("correct_swe2_status") == "paused":
-                        st.info("⏸️ Execution paused. No requirements have completed processing yet. Click 'Resume' to continue.")
-                    
                 if is_running:
-                    st.rerun()
+                    should_rerun = True
                     
         elif action == "compare_trace":
             st.markdown("#### 🔗 Bidirectional Traceability: SWE.1 (HLD) ↔ SWE.2 (LLD)")
@@ -446,81 +451,7 @@ def render_analysis_tab():
                 df = pd.DataFrame(trace_results["table"])
                 st.dataframe(apply_df_styling(df.style, color_trace, subset=['Status']), use_container_width=True, height=450)
                 
-        elif action == "compare_hld":
-            st.markdown("#### 🔍 Structural Alignment: SWE.1 Requirements vs HLD Diagram")
-            st.caption("Verifying alignment between the textual SWE.1 software requirements and the High Level Design diagram.")
-            
-            # Extract HLD components dynamically from SWE.1 requirements content
-            components_set = set()
-            for r in swe1_reqs:
-                # Find all text inside square brackets [Component]
-                matches = re.findall(r"\[([^\]]+)\]", r.content)
-                for m in matches:
-                    components_set.add(m.strip())
-            components = sorted(list(components_set))
-            if not components:
-                components = ["Main Component"]
-                
-            detected_str = ", ".join(f"`[{c}]`" for c in components[:3]) + ("..." if len(components) > 3 else "")
-            
-            with st.status("🤖 AI Vision Agent parsing layout blocks and requirements...", expanded=True) as status_indicator:
-                st.write("1. Reading High Level Design Diagram image metadata...")
-                st.write(f"2. Detecting structural diagram entities: {detected_str}...")
-                st.write("3. Analyzing dataflow connectors and interfaces in the diagram...")
-                st.write("4. Verifying if all diagram components are represented in the SWE.1 specification...")
-                status_indicator.update(label="Alignment analysis complete!", state="complete")
-                
-            alignment_data = get_cached_result(
-                "compare_hld",
-                (
-                    (swe1_files.name, swe1_files.size) if swe1_files else None,
-                    (hld_file.name, hld_file.size) if hld_file else None
-                ),
-                lambda: st.session_state.analyzer.compare_hld_alignment(swe1_reqs, components)
-            )
-            
-            df = pd.DataFrame(alignment_data)
-            st.dataframe(apply_df_styling(df.style, color_align, subset=['Status']), use_container_width=True)
-            
-        elif action == "compare_lld":
-            st.markdown("#### 🔍 Architectural Alignment: SWE.2 Requirements vs LLD Diagram")
-            st.caption("Verifying alignment between the low-level SWE.2 software architectural requirements and the Low Level Design diagram.")
-            
-            # Extract LLD methods dynamically from SWE.2 requirements content
-            methods_set = set()
-            for r in swe2_reqs:
-                # Find backticked signatures
-                backticks = re.findall(r"`([^`]+)`", r.content)
-                for b in backticks:
-                    if "(" in b or "." in b or "_" in b:
-                        methods_set.add(b.strip())
-                # Find function calls with parentheses
-                func_calls = re.findall(r"\b(\w+(?:\.\w+)*\([^)]*\))", r.content)
-                for f in func_calls:
-                    methods_set.add(f.strip())
-            methods = sorted(list(methods_set))
-            if not methods:
-                methods = ["initialize()"]
-                
-            detected_methods = ", ".join(f"`{m}`" for m in methods[:3]) + ("..." if len(methods) > 3 else "")
-            
-            with st.status("🤖 AI Vision Agent parsing low-level function signatures...", expanded=True) as status_indicator:
-                st.write("1. Reading Low Level Design Diagram image blocks...")
-                st.write(f"2. Extracting class interfaces and method signatures: {detected_methods}...")
-                st.write("3. Checking for match between diagram and SWE.2 requirement descriptions...")
-                status_indicator.update(label="LLD comparison complete!", state="complete")
-                
-            alignment_data = get_cached_result(
-                "compare_lld",
-                (
-                    (swe2_files.name, swe2_files.size) if swe2_files else None,
-                    (lld_file.name, lld_file.size) if lld_file else None
-                ),
-                lambda: st.session_state.analyzer.compare_lld_alignment(swe2_reqs, methods)
-            )
-            
-            df = pd.DataFrame(alignment_data)
-            st.dataframe(apply_df_styling(df.style, color_align, subset=['Status']), use_container_width=True)
+
 
         # --- EXPORT REPORT DELIVERABLES ---
         if not df.empty:
@@ -531,11 +462,11 @@ def render_analysis_tab():
             csv_buffer = df.to_csv(index=False).encode('utf-8')
             
             # Determine the active spec and metadata for the current action
-            if action in ["analyse_swe1", "correct_swe1", "compare_hld"]:
+            if action in ["analyse_swe1", "correct_swe1"]:
                 active_reqs = swe1_reqs
                 active_files = swe1_files
                 action_suffix = "swe1"
-            elif action in ["analyse_swe2", "correct_swe2", "compare_lld"]:
+            elif action in ["analyse_swe2", "correct_swe2"]:
                 active_reqs = swe2_reqs
                 active_files = swe2_files
                 action_suffix = "swe2"
@@ -608,3 +539,83 @@ def render_analysis_tab():
                 )
                 
                 st.caption(f"Note: Evaluated {len(df)} artifacts from {active_files.name if active_files else 'document'}")
+
+    # --- WORKFLOW EXECUTION HISTORY PANEL ---
+    if "requirement_history" in st.session_state and st.session_state.requirement_history:
+        st.markdown("---")
+        st.subheader("📜 Workflow Execution History")
+        
+        # Display clear history button
+        col_clear_1, col_clear_2 = st.columns([1.5, 5])
+        with col_clear_1:
+            if st.button("🧹 Clear History", key="clear_history_btn", use_container_width=True):
+                st.session_state.requirement_history = []
+                for task_action in ["analyse_swe1", "analyse_swe2", "correct_swe1", "correct_swe2"]:
+                    st.session_state.pop(f"{task_action}_added_to_history", None)
+                st.success("History cleared successfully!")
+                st.rerun()
+                
+        # Render expanders
+        for idx, item in enumerate(st.session_state.requirement_history):
+            is_expanded = (idx == 0)
+            item_type = item["type"]
+            emoji = "📊" if item_type == "Analyze" else "🛠️"
+            item_number = len(st.session_state.requirement_history) - idx
+            label = " (Latest)" if idx == 0 else ""
+            title = f"{emoji} {item_type} Requirement #{item_number}{label} - {item['source_file']} ({item['timestamp']})"
+            
+            with st.expander(title, expanded=is_expanded):
+                st.markdown(f"**📅 Timestamp:** `{item['timestamp']}` | **📂 Source:** `{item['source_file']}`")
+                
+                df_item = pd.DataFrame(item["result"])
+                
+                if item_type == "Analyze":
+                    total = len(df_item)
+                    passed = sum(1 for r in item["result"] if r.get("Status") == "Passed")
+                    review = total - passed
+                    
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Requirements Checked", total)
+                    m2.metric("Passed", passed)
+                    m3.metric("Review Needed", review)
+                    
+                    st.dataframe(apply_df_styling(df_item.style, color_status, subset=['Status']), use_container_width=True)
+                else:
+                    total = len(df_item)
+                    changes_made = sum(1 for r in item["result"] if r.get("Original Requirement") != r.get("Corrected Requirement"))
+                    
+                    m1, m2 = st.columns(2)
+                    m1.metric("Requirements Checked", total)
+                    m2.metric("Corrections Made", changes_made)
+                    
+                    st.dataframe(df_item, use_container_width=True)
+                
+                csv_buffer = df_item.to_csv(index=False).encode('utf-8')
+                
+                if item_type == "Analyze":
+                    md_report = st.session_state.analyzer.generate_report(item["result"], [], item["source_file"])
+                else:
+                    md_report = st.session_state.analyzer.generate_report([], item["result"], item["source_file"])
+                    
+                dcol1, dcol2 = st.columns(2)
+                with dcol1:
+                    st.download_button(
+                        label="📥 Download Detailed Findings (.CSV)",
+                        data=csv_buffer,
+                        file_name=f"{item_type.lower()}_findings_{item['id'][:8]}.csv",
+                        mime="text/csv",
+                        key=f"dl_csv_{item['id']}",
+                        use_container_width=True
+                    )
+                with dcol2:
+                    st.download_button(
+                        label="📥 Download Compliance Report (.MD)",
+                        data=md_report.encode('utf-8'),
+                        file_name=f"{item_type.lower()}_compliance_report_{item['id'][:8]}.md",
+                        mime="text/markdown",
+                        key=f"dl_md_{item['id']}",
+                        use_container_width=True
+                    )
+
+    if should_rerun:
+        st.rerun()

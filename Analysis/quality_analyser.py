@@ -5,6 +5,95 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from Model.requirement import Requirement
 
 
+INCOSE_DIAGNOSTIC_QUERIES = [
+    "EARS syntax WHILE WHEN IF WHERE trigger condition system SHALL response pattern",
+    "active voice subject verb appropriate subject-verb requirement INCOSE R2 R3",
+    "vague terms escape clauses forbidden words approximate adequate sufficient R7 R8 R9",
+    "measurable performance quantification units tolerance range values R33 R34 R35",
+    "singularity single thought sentence combinators and or unless R18 R19",
+    "verifiable testable requirement success criteria INCOSE C7 R34",
+    "necessity appropriate level abstraction correct C1 C2 C8",
+    "unambiguous complete singular feasible conforming C3 C4 C5 C6 C9",
+]
+
+def _fetch_incose_rules_context(rag, selected_collections: list, top_k_per_query: int = 1) -> str:
+    """
+    Fetch INCOSE rule chunks using targeted rule-dimension queries instead of
+    requirement text. Deduplicates by chunk ID so the same rule block isn't
+    repeated. Returns a condensed string safe to inject into a system prompt.
+    """
+    if not rag:
+        return ""
+
+    seen_ids = set()
+    rule_chunks = []
+
+    for query in INCOSE_DIAGNOSTIC_QUERIES:
+        try:
+            results = rag.search(
+                search_text=query,
+                collection_name=selected_collections,
+                top_k=top_k_per_query,
+            )
+            for r in results:
+                chunk_id = r.get("id")
+                score    = r.get("score", 0)
+                if chunk_id in seen_ids or score < 0.35:   # skip low-relevance hits
+                    continue
+                seen_ids.add(chunk_id)
+                payload = r.get("payload", {})
+                title   = payload.get("title", "")
+                text    = payload.get("text", "")
+                rule_chunks.append(f"[{title}]\n{text}")
+        except Exception:
+            continue
+
+    if not rule_chunks:
+        return ""
+
+    # Cap total context to ~2000 chars to stay within token budget
+    MAX_CONTEXT_CHARS = 2000
+    combined = "\n\n---\n\n".join(rule_chunks)
+    if len(combined) > MAX_CONTEXT_CHARS:
+        combined = combined[:MAX_CONTEXT_CHARS] + "\n...[truncated for token budget]"
+    return combined
+
+
+def _build_requirement_specific_queries(requirement_text: str) -> list[str]:
+    """
+    Generate 2–3 targeted queries derived from what the requirement is *about*,
+    aimed at pulling the rules most likely to be violated by this specific text.
+    These complement the static rule queries.
+    """
+    queries = []
+    text_lower = requirement_text.lower()
+
+    # Detect likely rule violation areas and add focused queries
+    vague_words = ["some", "any", "appropriate", "adequate", "sufficient",
+                   "reasonable", "typical", "flexible", "as needed"]
+    if any(w in text_lower for w in vague_words):
+        queries.append("INCOSE vague terms quantification forbidden words R7")
+
+    combinators = [" and ", " or ", " but ", " unless ", " whereas "]
+    if any(c in text_lower for c in combinators):
+        queries.append("INCOSE singularity combinators single thought sentence R18 R19")
+
+    escape_words = ["where possible", "if necessary", "as appropriate", "to the extent"]
+    if any(w in text_lower for w in escape_words):
+        queries.append("INCOSE escape clauses R8 avoid vague conditions")
+
+    if not any(kw in text_lower for kw in ["shall", "must", "will"]):
+        queries.append("INCOSE modality shall must requirement keyword R1 EARS")
+
+    if not any(kw in text_lower for kw in ["while", "when", "if", "where", "the system"]):
+        queries.append("EARS syntax trigger precondition system name conformance R1 C9")
+
+    # Always add a general EARS/INCOSE baseline query
+    queries.append("EARS syntax INCOSE requirement structure evaluation rules")
+
+    return queries[:3]  # cap at 3 to stay focused
+
+
 def get_effective_system_prompt(default_prompt: str, mode: str = "analysis") -> str:
     """Helper function to apply Prompt Sandbox override if enabled."""
     try:
@@ -92,7 +181,23 @@ def analyze_single_requirement(index, r, llm, rag, rag_context=None, selected_co
             rag_context = ""
             if rag:
                 try:
-                    rag_context = rag.query(r.content, collection_name=selected_collections, top_k=2)
+                    # 1. Static INCOSE rule dimension queries
+                    rule_context = _fetch_incose_rules_context(rag, selected_collections, top_k_per_query=1)
+
+                    # 2. Requirement-specific targeted queries
+                    req_queries = _build_requirement_specific_queries(r.content)
+                    extra_chunks = []
+                    seen = set()
+                    for q in req_queries:
+                        for hit in rag.search(q, collection_name=selected_collections, top_k=1):
+                            cid = hit.get("id")
+                            if cid not in seen and hit.get("score", 0) >= 0.35:
+                                seen.add(cid)
+                                payload = hit.get("payload", {})
+                                extra_chunks.append(f"[{payload.get('title','')}]\n{payload.get('text','')}")
+
+                    extra_context = "\n\n---\n\n".join(extra_chunks)
+                    rag_context = "\n\n".join(filter(None, [rule_context, extra_context]))[:2500]
                 except Exception:
                     pass
                 
@@ -128,7 +233,11 @@ def analyze_single_requirement(index, r, llm, rag, rag_context=None, selected_co
         system_prompt = get_effective_system_prompt(system_prompt, mode="analysis")
         if rag_context:
             system_prompt += (
-"\nIn addition to standard rules, you MUST also conform to these project-specific rules retrieved from the knowledge base:\n"
+                "\n\n## INCOSE GtWR V4 Rules Retrieved from Knowledge Base\n"
+                "The following rules are AUTHORITATIVE. Apply each one explicitly "
+                "when evaluating the requirement below. If a requirement violates "
+                "any rule listed here, status MUST be 'Review' and the rule ID must "
+                "be cited in 'failed_rule'.\n\n"
                 f"{rag_context}\n"
             )
         messages = [
@@ -164,15 +273,8 @@ def analyze_batch(batch_items, llm, rag, selected_collections=None):
     if not batch_items:
         return results
 
-    rag_contexts = []
-    if rag:
-        try:
-            reqs_text = [r.content for _, r in batch_items]
-            rag_contexts = rag.query_batch(reqs_text, collection_name=selected_collections, top_k=2)
-        except Exception:
-            rag_contexts = [""] * len(batch_items)
-    else:
-        rag_contexts = [""] * len(batch_items)
+    shared_rule_context = _fetch_incose_rules_context(rag, selected_collections, top_k_per_query=1)
+    rag_contexts = [shared_rule_context] * len(batch_items)
 
     system_prompt = (
         "You are a strict, deterministic Systems Engineering Requirements Auditor.\n"
@@ -202,7 +304,11 @@ def analyze_batch(batch_items, llm, rag, selected_collections=None):
     system_prompt = get_effective_system_prompt(system_prompt, mode="batch_analysis")
     if combined_rag_context:
         system_prompt += (
-            "\nIn addition to standard rules, you MUST also conform to these project-specific rules retrieved from the knowledge base:\n"
+            "\n\n## INCOSE GtWR V4 Rules Retrieved from Knowledge Base\n"
+            "The following rules are AUTHORITATIVE. Apply each one explicitly "
+            "when evaluating the requirements below. If a requirement violates "
+            "any rule listed here, status MUST be 'Review' and the rule ID must "
+            "be cited in 'failed_rule'.\n\n"
             f"{combined_rag_context}\n"
         )    
     user_content = "Analyze the following requirements:\n\n"
@@ -294,13 +400,7 @@ def analyze_requirements(requirements: List[Requirement], llm=None, progress_cal
     if mode == "batch":
         return analyze_requirements_batch(requirements, llm, progress_callback, rag, selected_collections, batch_size)
 
-    rag_contexts = [""] * total
-    if rag:
-        try:
-            full_reqs = [r.content for r in requirements]
-            rag_contexts = rag.query_batch(full_reqs, collection_name=selected_collections, top_k=2)
-        except Exception:
-            pass
+    rag_contexts = [None] * total
 
     analysis_data = [None] * total
     with ThreadPoolExecutor(max_workers=8) as executor:
@@ -330,7 +430,23 @@ def correct_single_requirement(index, r, llm, rag, rag_context=None, selected_co
             rag_context = ""
             if rag:
                 try:
-                    rag_context = rag.query(r.content, collection_name=selected_collections, top_k=2)
+                    # 1. Static INCOSE rule dimension queries
+                    rule_context = _fetch_incose_rules_context(rag, selected_collections, top_k_per_query=1)
+
+                    # 2. Requirement-specific targeted queries
+                    req_queries = _build_requirement_specific_queries(r.content)
+                    extra_chunks = []
+                    seen = set()
+                    for q in req_queries:
+                        for hit in rag.search(q, collection_name=selected_collections, top_k=1):
+                            cid = hit.get("id")
+                            if cid not in seen and hit.get("score", 0) >= 0.35:
+                                seen.add(cid)
+                                payload = hit.get("payload", {})
+                                extra_chunks.append(f"[{payload.get('title','')}]\n{payload.get('text','')}")
+
+                    extra_context = "\n\n---\n\n".join(extra_chunks)
+                    rag_context = "\n\n".join(filter(None, [rule_context, extra_context]))[:2500]
                 except Exception:
                     pass
     
@@ -352,7 +468,11 @@ def correct_single_requirement(index, r, llm, rag, rag_context=None, selected_co
         system_prompt = get_effective_system_prompt(system_prompt, mode="process")
         if rag_context:
             system_prompt += (
-                "\nIn addition to standard rules, you MUST also conform to these project-specific rules retrieved from the knowledge base:\n"
+                "\n\n## INCOSE GtWR V4 Rules Retrieved from Knowledge Base\n"
+                "The following rules are AUTHORITATIVE. Apply each one explicitly "
+                "when evaluating the requirement below. If a requirement violates "
+                "any rule listed here, status MUST be 'Review' and the rule ID must "
+                "be cited in 'failed_rule'.\n\n"
                 f"{rag_context}\n"
             )
             
@@ -420,15 +540,8 @@ def correct_batch(batch_items, llm, rag, selected_collections=None):
     if not batch_items:
         return results
 
-    rag_contexts = []
-    if rag:
-        try:
-            reqs_text = [r.content for _, r in batch_items]
-            rag_contexts = rag.query_batch(reqs_text, collection_name=selected_collections, top_k=2)
-        except Exception:
-            rag_contexts = [""] * len(batch_items)
-    else:
-        rag_contexts = [""] * len(batch_items)
+    shared_rule_context = _fetch_incose_rules_context(rag, selected_collections, top_k_per_query=1)
+    rag_contexts = [shared_rule_context] * len(batch_items)
 
     system_prompt = (
         "You are a strict, deterministic Senior Systems Engineer and Requirements Expert.\n"
@@ -453,7 +566,11 @@ def correct_batch(batch_items, llm, rag, selected_collections=None):
 
     if combined_rag_context:
         system_prompt += (
-            "\nIn addition to standard rules, you MUST also conform to these project-specific rules retrieved from the knowledge base:\n"
+            "\n\n## INCOSE GtWR V4 Rules Retrieved from Knowledge Base\n"
+            "The following rules are AUTHORITATIVE. Apply each one explicitly "
+            "when evaluating the requirements below. If a requirement violates "
+            "any rule listed here, status MUST be 'Review' and the rule ID must "
+            "be cited in 'failed_rule'.\n\n"
             f"{combined_rag_context}\n"
         )
 
@@ -577,13 +694,7 @@ def correct_requirements(requirements: List[Requirement], llm=None, progress_cal
     if mode == "batch":
         return correct_requirements_batch(requirements, llm, progress_callback, rag, selected_collections, batch_size)
 
-    rag_contexts = [""] * total
-    if rag:
-        try:
-            full_reqs = [r.content for r in requirements]
-            rag_contexts = rag.query_batch(full_reqs, collection_name=selected_collections, top_k=2)
-        except Exception:
-            pass
+    rag_contexts = [None] * total
 
     correction_data_map = {}
     with ThreadPoolExecutor(max_workers=8) as executor:

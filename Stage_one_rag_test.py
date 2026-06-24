@@ -5,12 +5,13 @@ from Model.requirement import Requirement  # Assumes your Requirement object foo
 from Model.llm import LLMManager
 
 class IsolatedLLMManager(LLMManager):
-    def get_response(self, messages, stream=True, response_format=None):
+    def get_response(self, messages, stream=True, response_format=None, model=None, **kwargs):
         trimmed_messages = messages[-10:]
         
         def call_and_validate():
-            kwargs = {
-                "model": self.model_name,
+            target_model = model if model else self.model_name
+            kwargs_api = {
+                "model": target_model,
                 "messages": trimmed_messages,
                 "temperature": 0.05,
                 "top_p": 0.85,
@@ -18,8 +19,8 @@ class IsolatedLLMManager(LLMManager):
                 "stream": stream
             }
             if response_format == "json":
-                kwargs["response_format"] = {"type": "json_object"}
-            response = self.client.chat.completions.create(**kwargs)
+                kwargs_api["response_format"] = {"type": "json_object"}
+            response = self.client.chat.completions.create(**kwargs_api)
             if not stream:
                 if not response or not response.choices:
                     raise ValueError("LLM returned an empty response (no choices).")

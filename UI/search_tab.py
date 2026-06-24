@@ -197,7 +197,7 @@ def render_search_tab():
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt}
                     ]
-                    completion = st.session_state.llm.get_response(messages, stream=False)
+                    completion = st.session_state.llm.get_response(messages, stream=False, model=getattr(st.session_state.llm, "analysis_model_name", getattr(st.session_state.llm, "model_name", "nvidia/llama-3.3-nemotron-super-49b-v1.5")))
                     st.session_state.llm_analysis = completion.choices[0].message.content
                     
             except Exception as e:

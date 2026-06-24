@@ -261,11 +261,11 @@ def render_single_chunk_card(chunk, idx, is_live=False):
 
 # Helper functions convert_table_to_markdown and extract_page_content are deleted since pymupdf4llm handles both natively.
 
-def safe_get_response(active_llm, messages, stream=False, max_retries=5):
+def safe_get_response(active_llm, messages, stream=False, max_retries=5, model=None):
     """Helper to call LLMManager.get_response with exponential backoff on rate limits."""
     for attempt in range(max_retries):
         try:
-            return active_llm.get_response(messages, stream=stream)
+            return active_llm.get_response(messages, stream=stream, model=model)
         except Exception as e:
             err_msg = str(e)
             if "429" in err_msg or "Too Many Requests" in err_msg or "rate limit" in err_msg.lower():
@@ -390,7 +390,7 @@ def generate_chunks_with_llm(page_markdown: str, page_num: int, llm=None) -> lis
             {"role": "user", "content": user_prompt}
         ]
         
-        response = safe_get_response(active_llm, messages, stream=False)
+        response = safe_get_response(active_llm, messages, stream=False, model=getattr(active_llm, "rag_model_name", getattr(active_llm, "model_name", "nvidia/llama-3.3-nemotron-super-49b-v1.5")))
         llm_output = response.choices[0].message.content
         chunks = extract_json_array(llm_output, show_error=False)
         
@@ -416,7 +416,7 @@ def generate_chunks_with_llm(page_markdown: str, page_num: int, llm=None) -> lis
             ]
             print(f"[UI/rag_tab] JSON parsing failed. Retrying with self-correction prompt...", flush=True)
             try:
-                response_retry = safe_get_response(active_llm, messages_retry, stream=False)
+                response_retry = safe_get_response(active_llm, messages_retry, stream=False, model=getattr(active_llm, "rag_model_name", getattr(active_llm, "model_name", "nvidia/llama-3.3-nemotron-super-49b-v1.5")))
                 llm_output_retry = response_retry.choices[0].message.content
                 chunks = extract_json_array(llm_output_retry, show_error=True)
             except Exception as retry_err:

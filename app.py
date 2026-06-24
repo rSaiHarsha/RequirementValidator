@@ -103,8 +103,46 @@ with st.sidebar:
         st.session_state.batch_size = 5
 
     st.markdown("---")
-    st.subheader("🤖 Active LLM Model")
-    st.info(f"**Model:**\n`{st.session_state.llm.model_name}`")
+    st.subheader("🤖 LLM Models Configuration")
+    
+    NVIDIA_MODELS = [
+        "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+        "openai/gpt-oss-120b"
+    ]
+    
+    if not hasattr(st.session_state.llm, "analysis_model_name"):
+        st.session_state.llm.analysis_model_name = "nvidia/llama-3.3-nemotron-super-49b-v1.5"
+    if not hasattr(st.session_state.llm, "rag_model_name"):
+        st.session_state.llm.rag_model_name = "nvidia/llama-3.3-nemotron-super-49b-v1.5"
+        
+    try:
+        analysis_idx = NVIDIA_MODELS.index(st.session_state.llm.analysis_model_name)
+    except ValueError:
+        analysis_idx = 0
+        
+    try:
+        rag_idx = NVIDIA_MODELS.index(st.session_state.llm.rag_model_name)
+    except ValueError:
+        rag_idx = 0
+
+    analysis_model = st.selectbox(
+        "🎯 Analysis Model",
+        options=NVIDIA_MODELS,
+        index=analysis_idx,
+        help="Model used for requirement evaluation and corrections."
+    )
+    
+    rag_model = st.selectbox(
+        "📂 RAG Chunking Model",
+        options=NVIDIA_MODELS,
+        index=rag_idx,
+        help="Model used for layout-aware document chunking and parsing."
+    )
+    
+    st.session_state.llm.analysis_model_name = analysis_model
+    st.session_state.llm.rag_model_name = rag_model
+    st.session_state.llm.model_name = analysis_model
+    
     st.caption("Powered by NVIDIA NIM Core engine.")
 
     st.markdown("---")

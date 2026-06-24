@@ -217,5 +217,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
-
+.cache_analyse_swe1.json
+.cache_correct_swe1.json
+.cache_analyze_swe1.json
+.cache_analyze_analyse_swe1.json
+.cache_correct_correct_swe1.json
+.cache_correct_swe1.json
 api_key.env

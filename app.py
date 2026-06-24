@@ -103,6 +103,15 @@ with st.sidebar:
         st.session_state.batch_size = 5
 
     st.markdown("---")
+    st.subheader("📜 History Settings")
+    st.session_state.history_max_items = st.number_input(
+        "Max History Items",
+        min_value=2,
+        value=5,
+        step=1,
+        
+        help="Maximum number of historical Analyze/Correct results to retain in the session history list."
+    )
     st.subheader("🤖 LLM Models Configuration")
     
     NVIDIA_MODELS = [
@@ -137,8 +146,12 @@ with st.sidebar:
         options=NVIDIA_MODELS,
         index=rag_idx,
         help="Model used for layout-aware document chunking and parsing."
-    )
-    
+        )
+
+    st.markdown("---")
+    st.subheader("🤖 Active LLM Model")
+    st.info(f"**Model:**\n`{st.session_state.llm.model_name}`")
+    st.caption("Powered by NVIDIA NIM Core engine.")
     st.session_state.llm.analysis_model_name = analysis_model
     st.session_state.llm.rag_model_name = rag_model
     st.session_state.llm.model_name = analysis_model

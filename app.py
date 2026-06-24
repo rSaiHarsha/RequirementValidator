@@ -27,6 +27,8 @@ if "version_minor" not in st.session_state:
     st.session_state.version_minor = 0
 if "version_patch" not in st.session_state:
     st.session_state.version_patch = 0
+if "analysis_mode" not in st.session_state:
+    st.session_state.analysis_mode = "RAG"
 
 @st.dialog("📚 Database Chunk Explorer", width="large")
 def view_chunks_dialog(collection_name: str):
@@ -87,6 +89,32 @@ def view_chunks_dialog(collection_name: str):
 with st.sidebar:
     st.subheader("📦 Application Version")
     st.info(f"**Version:** `v{st.session_state.version_major}.{st.session_state.version_minor}.{st.session_state.version_patch}`")
+    
+    st.markdown("---")
+    st.subheader("🔍 Analysis Mode")
+    st.session_state.analysis_mode = st.radio(
+        "Select Mode:",
+        ["RAG", "JSON Rules (STRICT)"],
+        index=0 if st.session_state.analysis_mode == "RAG" else 1,
+        help="RAG uses similarity search to retrieve guidelines from the database. JSON Rules Mode strictly uses the rules in rules.json."
+    )
+    
+    if st.session_state.analysis_mode == "JSON Rules (STRICT)":
+        uploaded_rules = st.file_uploader("Upload JSON Rules (.JSON)", type=["json"], key="rules_uploader")
+        if uploaded_rules is not None:
+            import json
+            import os
+            try:
+                rules_data = json.load(uploaded_rules)
+                os.makedirs("artefacts", exist_ok=True)
+                rules_path = os.path.join("artefacts", "rules.json")
+                with open(rules_path, "w", encoding="utf-8") as f:
+                    json.dump(rules_data, f, indent=4)
+                st.success("Rules uploaded successfully!")
+            except Exception as e:
+                st.error(f"Invalid JSON file: {e}")
+
+    st.markdown("---")
     st.header("⚙️ Configuration")
     st.markdown("Customize system parameters and API fault-tolerance.")
     

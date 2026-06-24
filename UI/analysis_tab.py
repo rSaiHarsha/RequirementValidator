@@ -275,6 +275,14 @@ def render_analysis_tab():
     st.markdown("### 📂 Automotive V-Cycle Upload Matrix")
     st.caption("Upload specs documents corresponding to different stages of the Automotive V-Cycle.")
     
+    # Check if JSON Rules mode is active but rules.json is missing
+    rules_missing = False
+    if st.session_state.get("analysis_mode", "RAG") == "JSON Rules (STRICT)":
+        rules_path = os.path.join(os.getcwd(), "artefacts", "rules.json")
+        if not os.path.exists(rules_path):
+            rules_missing = True
+            st.warning("⚠️ **No JSON rules file present.** Please upload a JSON rules file in the sidebar configuration to begin analysis.")
+
     with st.expander("🛠️ Upload Software Requirements Specifications", expanded=True):
         col_up1, col_up2 = st.columns(2)
         with col_up1:
@@ -296,7 +304,7 @@ def render_analysis_tab():
     has_swe1 = swe1_files is not None
     has_swe2 = swe2_files is not None
 
-    if has_swe1 or has_swe2:
+    if (has_swe1 or has_swe2) and not rules_missing:
         st.markdown("---")
         st.markdown("### ⚡ V-Cycle Analysis Panel")
         

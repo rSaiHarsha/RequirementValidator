@@ -65,7 +65,7 @@ def clean_and_parse_json(text: str):
             if isinstance(v, str):
                 v = v.strip()
             if key.lower() == "status" and isinstance(v, str):
-                v = "Passed" if v.lower() == "passed" else "Review"
+                v = "Passed" if v.lower() in ["passed", "pass"] else "Review"
             normalized_data[key.lower()] = v
         return normalized_data
     elif isinstance(data, list):
@@ -78,7 +78,7 @@ def clean_and_parse_json(text: str):
                     if isinstance(v, str):
                         v = v.strip()
                     if key.lower() == "status" and isinstance(v, str):
-                        v = "Passed" if v.lower() == "passed" else "Review"
+                        v = "Passed" if v.lower() in ["passed", "pass"] else "Review"
                     normalized_data[key.lower()] = v
                 normalized_list.append(normalized_data)
             else:
@@ -86,51 +86,89 @@ def clean_and_parse_json(text: str):
         return normalized_list
     return data
 
+def load_json_rules() -> dict:
+    import os
+    import json
+    rules_path = os.path.join(os.getcwd(), "artefacts", "rules.json")
+    if os.path.exists(rules_path):
+        try:
+            with open(rules_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"[quality_analyser] Error loading rules.json: {e}", flush=True)
+    return {}
+
 def analyze_single_requirement(index, r, llm, rag, rag_context=None, selected_collections=None):
     try:
-        if rag_context is None:
+        import streamlit as st
+        is_strict_json = st.session_state.get("analysis_mode", "RAG") == "JSON Rules (STRICT)"
+    except Exception:
+        is_strict_json = False
+
+    try:
+        if is_strict_json:
             rag_context = ""
-            if rag:
-                try:
-                    rag_context = rag.query(r.content, collection_name=selected_collections, top_k=2)
-                except Exception:
-                    pass
-                
-        system_prompt = (
-            "You are a strict, deterministic Systems Engineering Requirements Auditor.\n"
-            "Your task is to analyze an engineering requirement using INCOSE guidelines and EARS syntax.\n"
-            "You MUST:\n"
-            "- Identify structural components (trigger, condition, system response)\n"
-            "- Evaluate compliance against INCOSE guidelines, EARS syntax\n"
-            "\n"
-            "Rules for Output:\n"
-            "1. Return ONLY valid JSON exactly matching the schema below.\n"
-            "2. Do NOT include any explanation or markdown formatting outside the JSON.\n"
-            "3. Do NOT invent information. Output must be perfectly reproducible.\n"
-            "\n"
-            "JSON Schema:\n"
-            "{\n"
-            "  \"status\": \"Passed\" or \"Review\",\n"
-            "  \"failed_rule\": \"Rule name\" or \"None\",\n"
-            "  \"rationale\": \"Concise structured explanation\"\n"
-            "}"
-        )
-        
-            
-                
-            
-        system_prompt += (
-            "\nAnalyze the requirement structurally. Parse it internally into Preconditions, System Name, Modality, and System Response. Then evaluate the rules.\n"
-            "If it violates critical INCOSE rules and EARS Syntax, status MUST be 'Review'. Name the broken rule, and explain why.\n"
-            "Otherwise, status MUST be 'Passed'."
-        )
-        
-        system_prompt = get_effective_system_prompt(system_prompt, mode="analysis")
-        if rag_context:
-            system_prompt += (
-"\nIn addition to standard rules, you MUST also conform to these project-specific rules retrieved from the knowledge base:\n"
-                f"{rag_context}\n"
+            rules = load_json_rules()
+            system_prompt = (
+                "You are a rule evaluation engine. You must ONLY use the provided JSON rules. Do not use any external knowledge or assumptions. "
+                "No external interpretation is allowed. Do NOT infer missing requirements, enhance rules, or apply software engineering best practices unless explicitly present in the rules.\n\n"
+                "Provided JSON Rules:\n"
+                f"{json.dumps(rules, indent=2)}\n\n"
+                "For the requirement under evaluation, check if it satisfies all relevant rules (status = PASS) or violates any rule (status = FAIL).\n\n"
+                "Rules for Output:\n"
+                "1. Return ONLY valid JSON exactly matching the schema below.\n"
+                "2. Do NOT include any explanation or markdown formatting outside the JSON.\n"
+                "3. Do NOT use reasoning beyond JSON rules.\n\n"
+                "JSON Schema:\n"
+                "{\n"
+                "  \"status\": \"Passed\" or \"Review\",\n"
+                "  \"failed_rule\": \"Rule name/ID\" or \"None\",\n"
+                "  \"rationale\": \"Concise explanation citing the rule name/ID and how it is satisfied or violated\"\n"
+                "}"
             )
+            system_prompt = get_effective_system_prompt(system_prompt, mode="analysis")
+        else:
+            if rag_context is None:
+                rag_context = ""
+                if rag:
+                    try:
+                        rag_context = rag.query(r.content, collection_name=selected_collections, top_k=2)
+                    except Exception:
+                        pass
+                    
+            system_prompt = (
+                "You are a strict, deterministic Systems Engineering Requirements Auditor.\n"
+                "Your task is to analyze an engineering requirement using INCOSE guidelines and EARS syntax.\n"
+                "You MUST:\n"
+                "- Identify structural components (trigger, condition, system response)\n"
+                "- Evaluate compliance against INCOSE guidelines, EARS syntax\n"
+                "\n"
+                "Rules for Output:\n"
+                "1. Return ONLY valid JSON exactly matching the schema below.\n"
+                "2. Do NOT include any explanation or markdown formatting outside the JSON.\n"
+                "3. Do NOT invent information. Output must be perfectly reproducible.\n"
+                "\n"
+                "JSON Schema:\n"
+                "{\n"
+                "  \"status\": \"Passed\" or \"Review\",\n"
+                "  \"failed_rule\": \"Rule name\" or \"None\",\n"
+                "  \"rationale\": \"Concise structured explanation\"\n"
+                "}"
+            )
+            
+            system_prompt += (
+                "\nAnalyze the requirement structurally. Parse it internally into Preconditions, System Name, Modality, and System Response. Then evaluate the rules.\n"
+                "If it violates critical INCOSE rules and EARS Syntax, status MUST be 'Review'. Name the broken rule, and explain why.\n"
+                "Otherwise, status MUST be 'Passed'."
+            )
+            
+            system_prompt = get_effective_system_prompt(system_prompt, mode="analysis")
+            if rag_context:
+                system_prompt += (
+                    "\nIn addition to standard rules, you MUST also conform to these project-specific rules retrieved from the knowledge base:\n"
+                    f"{rag_context}\n"
+                )
+
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Full Requirement: \"{r.content}\"\nOriginal Rationale: \"{r.rationale}\""}
@@ -164,47 +202,75 @@ def analyze_batch(batch_items, llm, rag, selected_collections=None):
     if not batch_items:
         return results
 
-    rag_contexts = []
-    if rag:
-        try:
-            reqs_text = [r.content for _, r in batch_items]
-            rag_contexts = rag.query_batch(reqs_text, collection_name=selected_collections, top_k=2)
-        except Exception:
-            rag_contexts = [""] * len(batch_items)
-    else:
+    try:
+        import streamlit as st
+        is_strict_json = st.session_state.get("analysis_mode", "RAG") == "JSON Rules (STRICT)"
+    except Exception:
+        is_strict_json = False
+
+    if is_strict_json:
+        rules = load_json_rules()
+        system_prompt = (
+            "You are a rule evaluation engine. You must ONLY use the provided JSON rules. Do not use any external knowledge or assumptions. "
+            "No external interpretation is allowed. Do NOT infer missing requirements, enhance rules, or apply software engineering best practices unless explicitly present in the rules.\n\n"
+            "Provided JSON Rules:\n"
+            f"{json.dumps(rules, indent=2)}\n\n"
+            "Evaluate each requirement ONLY against these rules. For each requirement, determine if it satisfies all rules (status = PASS) or violates any rule (status = FAIL).\n\n"
+            "Rules for Output:\n"
+            "1. Return ONLY valid JSON exactly matching the schema below.\n"
+            "2. Do NOT include any explanation or markdown formatting outside the JSON.\n"
+            "3. The output MUST be a JSON array of objects, in the EXACT same order as the inputs.\n\n"
+            "JSON Schema:\n"
+            "[\n"
+            "  {\n"
+            "    \"status\": \"Passed\" or \"Review\",\n"
+            "    \"failed_rule\": \"Rule name/ID\" or \"None\",\n"
+            "    \"rationale\": \"Concise explanation citing the rule name/ID and how it is satisfied or violated\"\n"
+            "  }\n"
+            "]"
+        )
+        system_prompt = get_effective_system_prompt(system_prompt, mode="batch_analysis")
         rag_contexts = [""] * len(batch_items)
+    else:
+        rag_contexts = []
+        if rag:
+            try:
+                reqs_text = [r.content for _, r in batch_items]
+                rag_contexts = rag.query_batch(reqs_text, collection_name=selected_collections, top_k=2)
+            except Exception:
+                rag_contexts = [""] * len(batch_items)
+        else:
+            rag_contexts = [""] * len(batch_items)
 
-    system_prompt = (
-        "You are a strict, deterministic Systems Engineering Requirements Auditor.\n"
-        "Your task is to analyze multiple engineering requirements using INCOSE guidelines and EARS syntax.\n"
-        "You MUST evaluate each requirement structurally and check compliance.\n\n"
-        "Rules for Output:\n"
-        "1. Return ONLY valid JSON exactly matching the schema below.\n"
-        "2. Do NOT include any explanation or markdown formatting outside the JSON.\n"
-        "3. The output MUST be a JSON array of objects, in the EXACT same order as the inputs.\n\n"
-        "JSON Schema:\n"
-        "[\n"
-        "  {\n"
-        "    \"status\": \"Passed\" or \"Review\",\n"
-        "    \"failed_rule\": \"Rule name\" or \"None\",\n"
-        "    \"rationale\": \"Concise structured explanation\"\n"
-        "  }\n"
-        "]"
-    )
-
-    combined_rag_context = ""
-    for i, ctx in enumerate(rag_contexts):
-        if ctx:
-            combined_rag_context += f"Context for Requirement {i+1}:\n{ctx}\n"
-
-    
-
-    system_prompt = get_effective_system_prompt(system_prompt, mode="batch_analysis")
-    if combined_rag_context:
-        system_prompt += (
-            "\nIn addition to standard rules, you MUST also conform to these project-specific rules retrieved from the knowledge base:\n"
-            f"{combined_rag_context}\n"
-        )    
+        system_prompt = (
+            "You are a strict, deterministic Systems Engineering Requirements Auditor.\n"
+            "Your task is to analyze multiple engineering requirements using INCOSE guidelines and EARS syntax.\n"
+            "You MUST evaluate each requirement structurally and check compliance.\n\n"
+            "Rules for Output:\n"
+            "1. Return ONLY valid JSON exactly matching the schema below.\n"
+            "2. Do NOT include any explanation or markdown formatting outside the JSON.\n"
+            "3. The output MUST be a JSON array of objects, in the EXACT same order as the inputs.\n\n"
+            "JSON Schema:\n"
+            "[\n"
+            "  {\n"
+            "    \"status\": \"Passed\" or \"Review\",\n"
+            "    \"failed_rule\": \"Rule name\" or \"None\",\n"
+            "    \"rationale\": \"Concise structured explanation\"\n"
+            "  }\n"
+            "]"
+        )
+        system_prompt = get_effective_system_prompt(system_prompt, mode="batch_analysis")
+        
+        combined_rag_context = ""
+        for i, ctx in enumerate(rag_contexts):
+            if ctx:
+                combined_rag_context += f"Context for Requirement {i+1}:\n{ctx}\n"
+                
+        if combined_rag_context:
+            system_prompt += (
+                "\nIn addition to standard rules, you MUST also conform to these project-specific rules retrieved from the knowledge base:\n"
+                f"{combined_rag_context}\n"
+            )    
     user_content = "Analyze the following requirements:\n\n"
     for i, (idx, r) in enumerate(batch_items):
         user_content += f"--- Requirement {i+1} ---\n"
@@ -294,8 +360,14 @@ def analyze_requirements(requirements: List[Requirement], llm=None, progress_cal
     if mode == "batch":
         return analyze_requirements_batch(requirements, llm, progress_callback, rag, selected_collections, batch_size)
 
+    try:
+        import streamlit as st
+        is_strict_json = st.session_state.get("analysis_mode", "RAG") == "JSON Rules (STRICT)"
+    except Exception:
+        is_strict_json = False
+
     rag_contexts = [""] * total
-    if rag:
+    if rag and not is_strict_json:
         try:
             full_reqs = [r.content for r in requirements]
             rag_contexts = rag.query_batch(full_reqs, collection_name=selected_collections, top_k=2)

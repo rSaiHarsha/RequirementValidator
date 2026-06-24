@@ -98,12 +98,7 @@ def load_json_rules() -> dict:
             print(f"[quality_analyser] Error loading rules.json: {e}", flush=True)
     return {}
 
-def analyze_single_requirement(index, r, llm, rag, rag_context=None, selected_collections=None):
-    try:
-        import streamlit as st
-        is_strict_json = st.session_state.get("analysis_mode", "RAG") == "JSON Rules (STRICT)"
-    except Exception:
-        is_strict_json = False
+def analyze_single_requirement(index, r, llm, rag, rag_context=None, selected_collections=None, is_strict_json=False):
 
     try:
         if is_strict_json:
@@ -197,16 +192,10 @@ def analyze_single_requirement(index, r, llm, rag, rag_context=None, selected_co
             "Rationale": f"LLM analysis failed: {str(e)}"
         }
 
-def analyze_batch(batch_items, llm, rag, selected_collections=None):
+def analyze_batch(batch_items, llm, rag, selected_collections=None, is_strict_json=False):
     results = {}
     if not batch_items:
         return results
-
-    try:
-        import streamlit as st
-        is_strict_json = st.session_state.get("analysis_mode", "RAG") == "JSON Rules (STRICT)"
-    except Exception:
-        is_strict_json = False
 
     if is_strict_json:
         rules = load_json_rules()
@@ -307,14 +296,14 @@ def analyze_batch(batch_items, llm, rag, selected_collections=None):
         # Fallback to single parallel processing
         fallback_results = {}
         with ThreadPoolExecutor(max_workers=min(10, len(batch_items))) as ex:
-            fs = {ex.submit(analyze_single_requirement, idx, r, llm, rag, rag_contexts[i] if rag_contexts else None, selected_collections): idx for i, (idx, r) in enumerate(batch_items)}
+            fs = {ex.submit(analyze_single_requirement, idx, r, llm, rag, rag_contexts[i] if rag_contexts else None, selected_collections, is_strict_json): idx for i, (idx, r) in enumerate(batch_items)}
             for f in as_completed(fs):
                 idx = fs[f]
                 _, res = f.result()
                 fallback_results[idx] = res
         return fallback_results
 
-def analyze_requirements_batch(requirements: List[Requirement], llm, progress_callback=None, rag=None, selected_collections=None, batch_size=10) -> List[Dict[str, Any]]:
+def analyze_requirements_batch(requirements: List[Requirement], llm, progress_callback=None, rag=None, selected_collections=None, batch_size=10, is_strict_json=False) -> List[Dict[str, Any]]:
     total = len(requirements)
     analysis_data = [None] * total
     
@@ -324,11 +313,11 @@ def analyze_requirements_batch(requirements: List[Requirement], llm, progress_ca
         
     def process_batch(batch):
         try:
-            return analyze_batch(batch, llm, rag, selected_collections)
+            return analyze_batch(batch, llm, rag, selected_collections, is_strict_json)
         except Exception:
             fallback_results = {}
             with ThreadPoolExecutor(max_workers=min(10, len(batch))) as ex:
-                fs = {ex.submit(analyze_single_requirement, idx, r, llm, rag, selected_collections=selected_collections): idx for idx, r in batch}
+                fs = {ex.submit(analyze_single_requirement, idx, r, llm, rag, None, selected_collections, is_strict_json): idx for idx, r in batch}
                 for f in as_completed(fs):
                     idx = fs[f]
                     _, res = f.result()
@@ -358,7 +347,7 @@ def analyze_requirements(requirements: List[Requirement], llm=None, progress_cal
         return []
 
     if mode == "batch":
-        return analyze_requirements_batch(requirements, llm, progress_callback, rag, selected_collections, batch_size)
+        return analyze_requirements_batch(requirements, llm, progress_callback, rag, selected_collections, batch_size, is_strict_json)
 
     try:
         import streamlit as st
@@ -377,7 +366,7 @@ def analyze_requirements(requirements: List[Requirement], llm=None, progress_cal
     analysis_data = [None] * total
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {
-            executor.submit(analyze_single_requirement, i, r, llm, rag, rag_contexts[i], selected_collections): i 
+            executor.submit(analyze_single_requirement, i, r, llm, rag, rag_contexts[i], selected_collections, is_strict_json): i 
             for i, r in enumerate(requirements)
         }
         

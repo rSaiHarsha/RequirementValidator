@@ -263,6 +263,15 @@ def get_failed_requirements(requirements, action_id, file_name=None):
                 filtered_reqs.append(req)
     return filtered_reqs
 
+def get_latest_analysis_results(action_id, file_name=None):
+    """Retrieve the latest analysis results from history."""
+    if "requirement_history" in st.session_state:
+        for item in st.session_state.requirement_history:
+            if item.get("action_id") == action_id and item.get("type") == "Analyze":
+                if file_name is None or item.get("source_file") == file_name:
+                    return item.get("result")
+    return None
+
 def render_analysis_tab():
     st.header("INCOSE / ASPICE Automated Audit Tool")
 
@@ -364,10 +373,8 @@ def render_analysis_tab():
     # --- EXECUTION RESULTS DISPLAY PANEL ---
     action = st.session_state.last_action
     active_status = st.session_state.get(f"{action}_status", "idle") if action else "idle"
-    is_active_task = action in ["analyse_swe1", "analyse_swe2", "correct_swe1", "correct_swe2"] and active_status in ["running", "paused"]
-    is_trace_active = action == "compare_trace"
     
-    if (has_swe1 or has_swe2) and action and (is_active_task or is_trace_active):
+    if (has_swe1 or has_swe2) and action:
         st.markdown("---")
         st.subheader("📊 Execution Results")
         
@@ -381,96 +388,142 @@ def render_analysis_tab():
             text_color = '#155724' if val == 'Covered' else '#721c24'
             return f'background-color: {color}; color: {text_color}; font-weight: bold;'
             
-        if action == "analyse_swe1" and active_status in ["running", "paused"]:
-            st.markdown("#### 🔍 Quality Audit: SWE.1 Software Requirements Specification")
-            if not swe1_reqs:
-                st.info("No requirements found in the uploaded SWE.1 file.")
-            else:
-                def render_swe1_df(df, placeholder):
-                    placeholder.dataframe(apply_df_styling(df.style, color_status, subset=['Status']), use_container_width=True, height=400)
-                    
-                analysis_data, is_running = process_task_with_controls(
-                    "analyse_swe1", 
-                    swe1_reqs, 
-                    st.session_state.analyzer.analyze_requirements,
-                    mode_val, 
-                    selected_collections_val,
-                    render_swe1_df
-                )
-                if is_running:
-                    should_rerun = True
-                
-        elif action == "analyse_swe2" and active_status in ["running", "paused"]:
-            st.markdown("#### 🔍 Quality Audit: SWE.2 Software Architectural Design")
-            if not swe2_reqs:
-                st.info("No requirements found in the uploaded SWE.2 file.")
-            else:
-                def render_swe2_df(df, placeholder):
-                    placeholder.dataframe(apply_df_styling(df.style, color_status, subset=['Status']), use_container_width=True, height=400)
-                    
-                analysis_data, is_running = process_task_with_controls(
-                    "analyse_swe2", 
-                    swe2_reqs, 
-                    st.session_state.analyzer.analyze_requirements,
-                    mode_val, 
-                    selected_collections_val,
-                    render_swe2_df
-                )
-                if is_running:
-                    should_rerun = True
-                
-        elif action == "correct_swe1" and active_status in ["running", "paused"]:
-            st.markdown("#### 🛠️ Automated Corrections: SWE.1 Requirements")
-            if not swe1_reqs:
-                st.info("No requirements found in the uploaded SWE.1 file.")
-            else:
-                filtered_swe1_reqs = get_failed_requirements(swe1_reqs, "analyse_swe1", swe1_files.name if swe1_files else None)
-                if not filtered_swe1_reqs:
-                    st.info("No failed requirements found to correct (all requirements passed or no analysis history).")
-                    st.session_state["correct_swe1_status"] = "idle"
-                    st.session_state.last_action = None
-                    st.rerun()
+        if "swe1" in action:
+            st.markdown("### 📊 SWE.1 Software Requirements Specification Workspace")
+            
+            # 1. Quality Audit Table
+            latest_analysis = get_latest_analysis_results("analyse_swe1", swe1_files.name if swe1_files else None)
+            
+            if action == "analyse_swe1" and active_status in ["running", "paused"]:
+                st.markdown("#### 🔍 Quality Audit: SWE.1 Active Progress")
+                if not swe1_reqs:
+                    st.info("No requirements found in the uploaded SWE.1 file.")
                 else:
-                    def render_correct_swe1_df(df, placeholder):
-                        placeholder.dataframe(df, use_container_width=True, height=400)
+                    def render_swe1_df(df, placeholder):
+                        placeholder.dataframe(apply_df_styling(df.style, color_status, subset=['Status']), use_container_width=True, height=400)
                         
-                    correction_data, is_running = process_task_with_controls(
-                        "correct_swe1", 
-                        filtered_swe1_reqs, 
-                        st.session_state.analyzer.correct_requirements,
+                    analysis_data, is_running = process_task_with_controls(
+                        "analyse_swe1", 
+                        swe1_reqs, 
+                        st.session_state.analyzer.analyze_requirements,
                         mode_val, 
                         selected_collections_val,
-                        render_correct_swe1_df
+                        render_swe1_df
                     )
                     if is_running:
                         should_rerun = True
-                    
-        elif action == "correct_swe2" and active_status in ["running", "paused"]:
-            st.markdown("#### 🛠️ Automated Corrections: SWE.2 Requirements")
-            if not swe2_reqs:
-                st.info("No requirements found in the uploaded SWE.2 file.")
-            else:
-                filtered_swe2_reqs = get_failed_requirements(swe2_reqs, "analyse_swe2", swe2_files.name if swe2_files else None)
-                if not filtered_swe2_reqs:
-                    st.info("No failed requirements found to correct (all requirements passed or no analysis history).")
-                    st.session_state["correct_swe2_status"] = "idle"
-                    st.session_state.last_action = None
-                    st.rerun()
+            elif latest_analysis:
+                st.markdown("#### 🔍 SWE.1 Quality Audit Results")
+                df_analysis = pd.DataFrame(latest_analysis)
+                st.dataframe(apply_df_styling(df_analysis.style, color_status, subset=['Status']), use_container_width=True, height=300)
+                
+            # 2. Automated Corrections Table
+            latest_correction = None
+            if "requirement_history" in st.session_state:
+                for item in st.session_state.requirement_history:
+                    if item.get("action_id") == "correct_swe1" and item.get("type") == "Correct":
+                        if swe1_files is None or item.get("source_file") == swe1_files.name:
+                            latest_correction = item.get("result")
+                            break
+                            
+            if action == "correct_swe1" and active_status in ["running", "paused"]:
+                st.markdown("#### 🛠️ Automated Corrections: SWE.1 Active Progress")
+                if not swe1_reqs:
+                    st.info("No requirements found in the uploaded SWE.1 file.")
                 else:
-                    def render_correct_swe2_df(df, placeholder):
-                        placeholder.dataframe(df, use_container_width=True, height=400)
+                    filtered_swe1_reqs = get_failed_requirements(swe1_reqs, "analyse_swe1", swe1_files.name if swe1_files else None)
+                    if not filtered_swe1_reqs:
+                        st.info("No failed requirements found to correct (all requirements passed or no analysis history).")
+                        st.session_state["correct_swe1_status"] = "idle"
+                        st.session_state.last_action = None
+                        st.rerun()
+                    else:
+                        def render_correct_swe1_df(df, placeholder):
+                            placeholder.dataframe(df, use_container_width=True, height=400)
+                            
+                        correction_data, is_running = process_task_with_controls(
+                            "correct_swe1", 
+                            filtered_swe1_reqs, 
+                            st.session_state.analyzer.correct_requirements,
+                            mode_val, 
+                            selected_collections_val,
+                            render_correct_swe1_df
+                        )
+                        if is_running:
+                            should_rerun = True
+            elif latest_correction:
+                st.markdown("#### 🛠️ SWE.1 Automated Correction Results")
+                df_correction = pd.DataFrame(latest_correction)
+                st.dataframe(df_correction, use_container_width=True, height=300)
+                
+        elif "swe2" in action:
+            st.markdown("### 📊 SWE.2 Software Architectural Design Workspace")
+            
+            # 1. Quality Audit Table
+            latest_analysis = get_latest_analysis_results("analyse_swe2", swe2_files.name if swe2_files else None)
+            
+            if action == "analyse_swe2" and active_status in ["running", "paused"]:
+                st.markdown("#### 🔍 Quality Audit: SWE.2 Active Progress")
+                if not swe2_reqs:
+                    st.info("No requirements found in the uploaded SWE.2 file.")
+                else:
+                    def render_swe2_df(df, placeholder):
+                        placeholder.dataframe(apply_df_styling(df.style, color_status, subset=['Status']), use_container_width=True, height=400)
                         
-                    correction_data, is_running = process_task_with_controls(
-                        "correct_swe2", 
-                        filtered_swe2_reqs, 
-                        st.session_state.analyzer.correct_requirements,
+                    analysis_data, is_running = process_task_with_controls(
+                        "analyse_swe2", 
+                        swe2_reqs, 
+                        st.session_state.analyzer.analyze_requirements,
                         mode_val, 
                         selected_collections_val,
-                        render_correct_swe2_df
+                        render_swe2_df
                     )
                     if is_running:
                         should_rerun = True
-                    
+            elif latest_analysis:
+                st.markdown("#### 🔍 SWE.2 Quality Audit Results")
+                df_analysis = pd.DataFrame(latest_analysis)
+                st.dataframe(apply_df_styling(df_analysis.style, color_status, subset=['Status']), use_container_width=True, height=300)
+                
+            # 2. Automated Corrections Table
+            latest_correction = None
+            if "requirement_history" in st.session_state:
+                for item in st.session_state.requirement_history:
+                    if item.get("action_id") == "correct_swe2" and item.get("type") == "Correct":
+                        if swe2_files is None or item.get("source_file") == swe2_files.name:
+                            latest_correction = item.get("result")
+                            break
+                            
+            if action == "correct_swe2" and active_status in ["running", "paused"]:
+                st.markdown("#### 🛠️ Automated Corrections: SWE.2 Active Progress")
+                if not swe2_reqs:
+                    st.info("No requirements found in the uploaded SWE.2 file.")
+                else:
+                    filtered_swe2_reqs = get_failed_requirements(swe2_reqs, "analyse_swe2", swe2_files.name if swe2_files else None)
+                    if not filtered_swe2_reqs:
+                        st.info("No failed requirements found to correct (all requirements passed or no analysis history).")
+                        st.session_state["correct_swe2_status"] = "idle"
+                        st.session_state.last_action = None
+                        st.rerun()
+                    else:
+                        def render_correct_swe2_df(df, placeholder):
+                            placeholder.dataframe(df, use_container_width=True, height=400)
+                            
+                        correction_data, is_running = process_task_with_controls(
+                            "correct_swe2", 
+                            filtered_swe2_reqs, 
+                            st.session_state.analyzer.correct_requirements,
+                            mode_val, 
+                            selected_collections_val,
+                            render_correct_swe2_df
+                        )
+                        if is_running:
+                            should_rerun = True
+            elif latest_correction:
+                st.markdown("#### 🛠️ SWE.2 Automated Correction Results")
+                df_correction = pd.DataFrame(latest_correction)
+                st.dataframe(df_correction, use_container_width=True, height=300)
+                
         elif action == "compare_trace":
             st.markdown("#### 🔗 Bidirectional Traceability: SWE.1 (HLD) ↔ SWE.2 (LLD)")
             if not swe1_reqs or not swe2_reqs:
@@ -588,7 +641,8 @@ def render_analysis_tab():
                 st.caption(f"Note: Evaluated {len(df)} artifacts from {active_files.name if active_files else 'document'}")
 
     # --- WORKFLOW EXECUTION HISTORY PANEL ---
-    if "requirement_history" in st.session_state and st.session_state.requirement_history:
+    is_any_task_running = any(st.session_state.get(f"{act}_status") in ["running", "paused"] for act in ["analyse_swe1", "analyse_swe2", "correct_swe1", "correct_swe2"])
+    if "requirement_history" in st.session_state and st.session_state.requirement_history and not is_any_task_running:
         st.markdown("---")
         st.subheader("📜 Workflow Execution History")
         
@@ -604,7 +658,7 @@ def render_analysis_tab():
                 
         # Render expanders
         for idx, item in enumerate(st.session_state.requirement_history):
-            is_expanded = (idx == 0)
+            is_expanded = False
             item_type = item["type"]
             emoji = "📊" if item_type == "Analyze" else "🛠️"
             item_number = len(st.session_state.requirement_history) - idx
@@ -628,8 +682,8 @@ def render_analysis_tab():
                     
                     st.dataframe(apply_df_styling(df_item.style, color_status, subset=['Status']), use_container_width=True)
                 else:
-                    total = len(df_item)
-                    changes_made = sum(1 for r in item["result"] if r.get("Original Requirement") != r.get("Corrected Requirement"))
+                    total = len(set(r.get("Original Requirement", "") for r in item["result"] if r.get("Original Requirement")))
+                    changes_made = len(set(r.get("Original Requirement", "") for r in item["result"] if r.get("Original Requirement") and r.get("Original Requirement") != r.get("Corrected Requirement")))
                     
                     m1, m2 = st.columns(2)
                     m1.metric("Requirements Checked", total)

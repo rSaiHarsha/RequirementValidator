@@ -9,7 +9,7 @@ env_path = Path(".env") if Path(".env").exists() else Path("api_key.env")
 load_dotenv(env_path)
 
 class LLMManager:
-    def __init__(self, model_name="nvidia/llama-3.3-nemotron-super-49b-v1.5"):
+    def __init__(self, model_name="nvidia/llama-3.3-nemotron-super-49b-v1.5", rag_model_name="nvidia/llama-3.3-nemotron-super-49b-v1.5", analysis_model_name="nvidia/llama-3.3-nemotron-super-49b-v1.5"):
         # Check Streamlit secrets first, fallback to environment variable
         api_key = None
         try:
@@ -26,6 +26,8 @@ class LLMManager:
             api_key=api_key
         )
         self.model_name = model_name
+        self.rag_model_name = rag_model_name
+        self.analysis_model_name = analysis_model_name
         self.embedding_model = "nvidia/nv-embedqa-e5-v5"
         self.retries = 3
 
@@ -48,13 +50,16 @@ class LLMManager:
                     print(f"[LLMManager] API call failed after {retries} retries: {e}", flush=True)
                     raise last_exception
 
-    def get_response(self, messages, stream=True):
+    def get_response(self, messages, stream=True, model=None):
         # Keep a sliding window of the last 10 messages to avoid token limit issues
         trimmed_messages = messages[-10:]
         
+        # Use specific model if provided, otherwise default to self.model_name
+        target_model = model if model else self.model_name
+        
         def call_and_validate():
             response = self.client.chat.completions.create(
-                model=self.model_name,
+                model=target_model,
                 messages=trimmed_messages,
                 temperature=0.0,
                 top_p=0.01,

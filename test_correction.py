@@ -4,7 +4,7 @@ from Analysis.quality_analyser import correct_requirements, correct_single_requi
 import os
 
 class MockLLM:
-    def get_response(self, messages, stream=False):
+    def get_response(self, messages, stream=False, *args, **kwargs):
         class Msg:
             content = "the system shall work correctly"
         class Choice:

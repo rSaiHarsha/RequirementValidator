@@ -157,7 +157,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
-
+vector_store.pkl
 # Spyder project settings
 .spyderproject
 .spyproject
@@ -217,5 +217,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
-
+.cache_analyse_swe1.json
+.cache_correct_swe1.json
+.cache_analyze_swe1.json
+.cache_analyze_analyse_swe1.json
+.cache_correct_correct_swe1.json
+.cache_correct_swe1.json
 api_key.env

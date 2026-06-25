@@ -63,11 +63,12 @@ def view_chunks_dialog(collection_name: str):
                 meta = payload.get("metadata", {})
                 itype = meta.get("item_type", "N/A")
                 iid = meta.get("item_id") or "N/A"
+                emb_model = meta.get("embedding_model", "N/A")
                 
                 st.markdown(f"""
                 <div style="background: rgba(30, 41, 59, 0.45); border: 1px solid rgba(255,255,255,0.08); padding: 12px; border-radius: 8px; margin-bottom: 10px;">
                     <div style="font-size: 0.78rem; color: #94a3b8; margin-bottom: 6px;">
-                        <strong>Chunk #{idx}</strong> | ID: <code>{cid}</code> | Type: <code>{itype}</code> | Ref: <code>{iid}</code>
+                        <strong>Chunk #{idx}</strong> | ID: <code>{cid}</code> | Type: <code>{itype}</code> | Model: <code>{emb_model}</code> | Ref: <code>{iid}</code>
                     </div>
                     <details style="cursor: pointer;">
                         <summary style="font-size: 0.95rem; font-weight: 600; color: #60a5fa;">{t}</summary>
@@ -108,12 +109,53 @@ with st.sidebar:
         min_value=2,
         value=5,
         step=1,
+        
         help="Maximum number of historical Analyze/Correct results to retain in the session history list."
     )
+    st.subheader("🤖 LLM Models Configuration")
+    
+    NVIDIA_MODELS = [
+        "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+        "openai/gpt-oss-120b"
+    ]
+    
+    if not hasattr(st.session_state.llm, "analysis_model_name"):
+        st.session_state.llm.analysis_model_name = "nvidia/llama-3.3-nemotron-super-49b-v1.5"
+    if not hasattr(st.session_state.llm, "rag_model_name"):
+        st.session_state.llm.rag_model_name = "nvidia/llama-3.3-nemotron-super-49b-v1.5"
+        
+    try:
+        analysis_idx = NVIDIA_MODELS.index(st.session_state.llm.analysis_model_name)
+    except ValueError:
+        analysis_idx = 0
+        
+    try:
+        rag_idx = NVIDIA_MODELS.index(st.session_state.llm.rag_model_name)
+    except ValueError:
+        rag_idx = 0
 
+    analysis_model = st.selectbox(
+        "🎯 Analysis Model",
+        options=NVIDIA_MODELS,
+        index=analysis_idx,
+        help="Model used for requirement evaluation and corrections."
+    )
+    
+    rag_model = st.selectbox(
+        "📂 RAG Chunking Model",
+        options=NVIDIA_MODELS,
+        index=rag_idx,
+        help="Model used for layout-aware document chunking and parsing."
+    )
+    
     st.markdown("---")
     st.subheader("🤖 Active LLM Model")
     st.info(f"**Model:**\n`{st.session_state.llm.model_name}`")
+    st.caption("Powered by NVIDIA NIM Core engine.")
+    st.session_state.llm.analysis_model_name = analysis_model
+    st.session_state.llm.rag_model_name = rag_model
+    st.session_state.llm.model_name = analysis_model
+    
     st.caption("Powered by NVIDIA NIM Core engine.")
 
     st.markdown("---")

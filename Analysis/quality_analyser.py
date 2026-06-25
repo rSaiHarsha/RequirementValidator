@@ -136,7 +136,7 @@ def analyze_single_requirement(index, r, llm, rag, rag_context=None, selected_co
             {"role": "user", "content": f"Full Requirement: \"{r.content}\"\nOriginal Rationale: \"{r.rationale}\""}
         ]
         
-        response = llm.get_response(messages, stream=False)
+        response = llm.get_response(messages, stream=False, model=getattr(llm, "analysis_model_name", getattr(llm, "model_name", "nvidia/llama-3.3-nemotron-super-49b-v1.5")))
         data = clean_and_parse_json(response.choices[0].message.content)
         
         return index, {
@@ -218,7 +218,7 @@ def analyze_batch(batch_items, llm, rag, selected_collections=None):
     ]
 
     try:
-        response = llm.get_response(messages, stream=False)
+        response = llm.get_response(messages, stream=False, model=getattr(llm, "analysis_model_name", getattr(llm, "model_name", "nvidia/llama-3.3-nemotron-super-49b-v1.5")))
         raw_text = response.choices[0].message.content
         data = clean_and_parse_json(raw_text)
         
@@ -363,7 +363,7 @@ def correct_single_requirement(index, r, llm, rag, rag_context=None, selected_co
             {"role": "user", "content": f"Full Requirement Context: \"{current_text}\""}
         ]
         
-        response = llm.get_response(messages, stream=False)
+        response = llm.get_response(messages, stream=False, model=getattr(llm, "analysis_model_name", getattr(llm, "model_name", "nvidia/llama-3.3-nemotron-super-49b-v1.5")))
 
         raw_response = response.choices[0].message.content.strip()
 
@@ -471,7 +471,7 @@ def correct_batch(batch_items, llm, rag, selected_collections=None):
     ]
 
     try:
-        response = llm.get_response(messages, stream=False)
+        response = llm.get_response(messages, stream=False, model=getattr(llm, "analysis_model_name", getattr(llm, "model_name", "nvidia/llama-3.3-nemotron-super-49b-v1.5")))
         raw_text = response.choices[0].message.content
         data = clean_and_parse_json(raw_text)
         

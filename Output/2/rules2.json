@@ -1,0 +1,8 @@
+{
+    "rule1": "must_be_atomic",
+    "description1": "Requirement must express only one behavior.",
+    "rule2": "must_be_testable",
+    "description2": "Requirement must be objectively verifiable.",
+    "rule3": "must_be_unambiguous",
+    "description3": "Requirement must not contain subjective or vague language."
+}

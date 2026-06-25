@@ -1,0 +1,6 @@
+{
+    "incoseRule": {
+        "ruleId": "INCOSE-001",
+        "rule": "Each requirement shall state exactly one requirement item. A requirement item is a single system response, which may optionally include a single associated trigger/condition. The requirement shall not combine multiple distinct system responses or capabilities using conjunctions such as and, or, as well as, or similar constructs"
+    }
+}

@@ -1,8 +1,6 @@
 {
-    "rule1": "must_be_atomic",
-    "description1": "Requirement must express only one behavior.",
-    "rule2": "must_be_testable",
-    "description2": "Requirement must be objectively verifiable.",
-    "rule3": "must_be_unambiguous",
-    "description3": "Requirement must not contain subjective or vague language."
+    "incoseRule": {
+        "ruleId": "INCOSE-001",
+        "rule": "Each requirement shall state exactly one requirement item. A requirement item is a single system response, which may optionally include a single associated trigger/condition. The requirement shall not combine multiple distinct system responses or capabilities using conjunctions such as and, or, as well as, or similar constructs"
+    }
 }

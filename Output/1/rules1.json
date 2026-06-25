@@ -1,6 +1,6 @@
 {
     "incoseRule": {
         "ruleId": "INCOSE-001",
-        "rule": "Each requirement shall state exactly one requirement item. A requirement item is a single capability, constraint, condition, or quality. The requirement shall not combine multiple requirement items using conjunctions such as and, or, as well as, or similar constructs. If a statement contains more than one capability, constraint, condition, or quality, it shall be split into separate requirements."
+        "rule": "Each requirement shall state exactly one requirement item. A requirement item is a single system response, which may optionally include a single associated trigger/condition. The requirement shall not combine multiple distinct system responses or capabilities using conjunctions such as and, or, as well as, or similar constructs"
     }
 }
